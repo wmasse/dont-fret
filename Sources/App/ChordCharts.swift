@@ -186,14 +186,20 @@ enum ChordCharts {
         let wanted = normTitle(title), who = normArtist(artist)
         guard !wanted.isEmpty else { return nil }
         var tried = Set<Int>()
+        func artistMatches(_ a: String) -> Bool {
+            let n = normArtist(a)
+            return n == who || n.contains(who) || who.contains(n)
+        }
         for q in ["\(wanted) \(who)", wanted] {
             guard let hits = try? await search(q) else { continue }
-            // the search's "has chords" flag isn't reliable, so try matching songs anyway (flagged ones first)
-            let good = hits.filter { h in
-                !tried.contains(h.songId) && normTitle(h.title) == wanted
-                    && (normArtist(h.artist) == who || normArtist(h.artist).contains(who) || who.contains(normArtist(h.artist)))
+            // exact title first; then titles that only add words at the end ("…in Love" vs "…in Love with You")
+            let exact = hits.filter { !tried.contains($0.songId) && normTitle($0.title) == wanted && artistMatches($0.artist) }
+            let longer = hits.filter { h in
+                !tried.contains(h.songId) && normTitle(h.title).hasPrefix(wanted + " ") && normArtist(h.artist) == who
+                    && !["live", "acoustic", "cover", "instrumental", "fingerstyle", "solo", "bass", "drum", "easy"].contains { normTitle(h.title).contains($0) }
             }
-            for h in good.sorted(by: { $0.hasChords && !$1.hasChords }).prefix(3) {
+            // the search's "has chords" flag isn't reliable, so try matching songs anyway (flagged ones first)
+            for h in exact.sorted(by: { $0.hasChords && !$1.hasChords }).prefix(3) + longer.prefix(2) {
                 tried.insert(h.songId)
                 if let c = try? await fetch(h) { return c }
             }
@@ -201,18 +207,19 @@ enum ChordCharts {
         return nil
     }
 
-    /// "Wonderwall (Remastered 2014)" → "wonderwall"; "Hey Jude - 2015 Mix" → "hey jude".
+    /// "Wonderwall (Remastered 2014)" → "wonderwall"; "Hey Jude - 2015 Mix" → "hey jude";
+    /// "Señorita" → "senorita"; "Don’t Stop Believin'" → "dont stop believin".
     static func normTitle(_ s: String) -> String {
-        var t = s.lowercased()
-        for sep in [" (", " [", " - ", " feat.", " ft."] { if let r = t.range(of: sep) { t = String(t[..<r.lowerBound]) } }
-        t = t.replacingOccurrences(of: "’", with: "'")
-        return t.filter { $0.isLetter || $0.isNumber || $0 == " " || $0 == "'" }
+        var t = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        for sep in [" (", " [", " - ", " feat.", " ft.", " featuring "] { if let r = t.range(of: sep) { t = String(t[..<r.lowerBound]) } }
+        t = t.replacingOccurrences(of: "&", with: "and")
+        return t.filter { $0.isLetter || $0.isNumber || $0 == " " }
             .split(separator: " ").joined(separator: " ")
     }
 
     static func normArtist(_ s: String) -> String {
-        var a = s.lowercased()
-        for sep in [" & ", " feat", " ft.", ", ", " and ", " x "] { if let r = a.range(of: sep) { a = String(a[..<r.lowerBound]) } }
+        var a = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        for sep in [" & ", " feat", " ft.", ", ", " and ", " x ", " with "] { if let r = a.range(of: sep) { a = String(a[..<r.lowerBound]) } }
         if a.hasPrefix("the ") { a.removeFirst(4) }
         return a.filter { $0.isLetter || $0.isNumber || $0 == " " }.split(separator: " ").joined(separator: " ")
     }

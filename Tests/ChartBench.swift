@@ -159,3 +159,28 @@ extension SelfTest {
     }
 }
 #endif
+
+/// Whole-song listening: a preview looped to song length (with silence around it, as a real
+/// listen would have) must come back as one song of the right length, quickly.
+func wholeBench() {
+    let dir = ProcessInfo.processInfo.environment["BENCH_DIR"] ?? "bench"
+    for name in ["riptide", "perfect", "wonderwall", "creep"] {
+        let url = URL(fileURLWithPath: "\(dir)/\(name).m4a")
+        guard let (x, sr) = try? Transcriber.readMono(url) else { print("   \(name): no file"); continue }
+        // loop a whole number of 4-bar phrases, so the beat runs on steadily like a real song
+        guard let pre = try? Transcriber.analyze(samples: x, sampleRate: sr), pre.bars.count >= 8 else { print("   \(name): preview failed"); continue }
+        let phrases = pre.bars.count / 4 * 4
+        let clip = Array(x[Int(pre.bars[0].start * sr)..<min(x.count, Int(pre.bars[phrases - 1].end * sr))])
+        let silence = [Float](repeating: 0, count: Int(sr * 3))
+        var long = silence
+        while Double(long.count) / sr < 200 { long += clip }
+        long += silence
+        let t0 = Date()
+        let trimmed = WholeSongListener.trimSilence(long)
+        guard let t = try? Transcriber.analyze(samples: trimmed, sampleRate: sr) else { print("   \(name): analysis failed"); continue }
+        let s = Transcriber.song(from: t, title: name, artist: "", genre: "Pop", wholeSong: true)
+        print(String(format: "   %@: heard %.0f s (trimmed from %.0f), song %@, %d bars, %d parts, key %@, %.1f s to analyse",
+                     name, t.duration, Double(long.count) / sr, s.durationText, t.bars.count, s.sections.count, t.keyName, Date().timeIntervalSince(t0)))
+        print("      " + s.sections.map { "\($0.name)×\($0.repeats): \($0.chords)" }.joined(separator: " | "))
+    }
+}

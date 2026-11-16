@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Search any song → the app listens to its preview and writes the chords → check and add.
 struct AddSongView: View {
@@ -36,6 +37,12 @@ struct AddSongView: View {
     /// Whole-song chords from a chord chart, lined up with the recording (nil: none found or not looked up).
     @State private var chartMatch: ChartMatch?
     @State private var chartLooked = false
+    /// Chords worked out from the whole song (listened to while it played, or from an audio file).
+    @State private var wholeAudio: Transcription?
+    @State private var wholeFromFile = false
+    @State private var wholeFile: URL?
+    @State private var wholeError: String?
+    @StateObject private var listener = WholeSongListener()
 
     // paste
     @State private var pasted = ""
@@ -69,7 +76,7 @@ struct AddSongView: View {
             if !initialQuery.isEmpty { query = initialQuery; runSearch(now: true) }
             searchFocused = true
         }
-        .onDisappear { player.stop(); chordPlayer.stop(); searchTask?.cancel() }
+        .onDisappear { player.stop(); chordPlayer.stop(); searchTask?.cancel(); listener.cancel() }
     }
 
     @State private var lastTrack: CatalogTrack?
@@ -117,6 +124,7 @@ struct AddSongView: View {
 
     private func back() {
         player.stop()
+        listener.cancel()
         switch phase {
         case .edit: if let t = lastTrack { phase = .review(t) } else { phase = .search }
         case .paste: if transcription != nil, let t = lastTrack { phase = .review(t) } else { phase = .search }
@@ -305,6 +313,7 @@ struct AddSongView: View {
     private func pick(_ t: CatalogTrack) {
         lastTrack = t
         transcription = nil; failure = nil; step = 0; chartMatch = nil; chartLooked = false
+        wholeAudio = nil; wholeFile = nil; wholeError = nil; listener.cancel()
         guard let p = t.previewUrl.flatMap(URL.init(string:)) else {
             phase = .paste(t)
             return
@@ -390,7 +399,7 @@ struct AddSongView: View {
 
     private func reviewView(_ t: CatalogTrack) -> some View {
         Group {
-            if let raw = transcription {
+            if let raw = wholeAudio ?? transcription {
                 let tr = effective(raw)
                 let song = builtSong(t, raw)
                 VStack(spacing: 0) {
@@ -416,6 +425,7 @@ struct AddSongView: View {
                                 Spacer(minLength: 0)
                             }
                             sourceCard(song)
+                            if wholeAudio == nil && usableChart == nil { wholeSongPanel(t) }
                             if tr.capo > 0 { capoChoice(tr) }
                             HStack(spacing: 16) {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -498,14 +508,18 @@ struct AddSongView: View {
     /// The preview's bars, lit up in time with the audio.
     private func listenCard(_ tr: Transcription, _ song: Song) -> some View {
         let shift = useCapo ? tr.capo : 0
+        // bars line up with the preview, or with the chosen audio file; a listened-to song has nothing to replay
+        let audio: URL? = wholeAudio == nil ? previewFile : wholeFile
         let current = player.playing ? tr.bars.lastIndex { $0.start <= player.time } : nil
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Button { if let f = previewFile { player.toggle(f) } } label: {
-                    Label(player.playing ? "Stop" : "Listen", systemImage: player.playing ? "stop.fill" : "play.fill")
+                if audio != nil {
+                    Button { if let f = audio { player.toggle(f) } } label: {
+                        Label(player.playing ? "Stop" : "Listen", systemImage: player.playing ? "stop.fill" : "play.fill")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                Text(player.playing ? "Follow the highlighted chord." : "Hear the preview with the chords it found.")
+                Text(audio == nil ? "Every bar heard while the song played." : (player.playing ? "Follow the highlighted chord." : (wholeAudio == nil ? "Hear the preview with the chords it found." : "Hear your audio file with the chords it found.")))
                     .font(Theme.font(12)).foregroundStyle(Theme.textDim)
                 Spacer()
                 Text("\(tr.bars.count) bars heard").font(Theme.font(11, .medium)).foregroundStyle(Theme.textFaint)
@@ -518,7 +532,7 @@ struct AddSongView: View {
                         .foregroundStyle(i == current ? Theme.onAccent : Theme.text)
                         .frame(maxWidth: .infinity, minHeight: 34)
                         .background(RoundedRectangle(cornerRadius: 8).fill(i == current ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Theme.surface2)))
-                        .onTapGesture { if let f = previewFile { player.play(f, from: bar.start) } }
+                        .onTapGesture { if let f = audio { player.play(f, from: bar.start) } }
                         .accessibilityLabel("Bar \(i + 1): \(shifted(bar.tokens, by: -shift))")
                 }
             }
@@ -547,12 +561,18 @@ struct AddSongView: View {
 
     /// The analysis with the chart's whole-song chords in place, when there's a good chart.
     private func effective(_ tr: Transcription) -> Transcription {
-        guard let m = chartMatch, m.quality != .poor else { return tr }
+        guard wholeAudio == nil, let m = chartMatch, m.quality != .poor else { return tr }
         return ChordCharts.apply(m, to: tr)
     }
 
     private func builtSong(_ t: CatalogTrack, _ raw: Transcription) -> Song {
         let tr = effective(raw)
+        if wholeAudio != nil {
+            return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
+                                    note: wholeFromFile ? "Chords worked out from the whole song in your audio file. Check them by ear and tap Edit to fix anything."
+                                        : "Chords worked out from the whole song as it played on your Mac. Check them by ear and tap Edit to fix anything.",
+                                    wholeSong: true)
+        }
         if let m = usableChart {
             return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
                                     note: "Whole-song chords from a \(m.chart.source) chord chart by its contributors, lined up with the recording's key and tempo. Check them by ear and tap Edit to fix anything.",
@@ -568,19 +588,22 @@ struct AddSongView: View {
         let tint: Color
         let title: String
         let detail: String
-        if let m {
+        if wholeAudio != nil {
+            icon = "waveform"; tint = Theme.success
+            title = wholeFromFile ? "Whole-song chords from your audio file" : "Whole-song chords from listening"
+            detail = "Worked out from the full recording: \(song.sections.count) part\(song.sections.count == 1 ? "" : "s"), \(song.durationText). Listening by ear can miss quick changes — check them and tap Edit to fix anything."
+        } else if let m {
             icon = "doc.text.magnifyingglass"; tint = m.quality == .high ? Theme.success : Theme.warn
             title = "Whole-song chords from a chord chart"
             detail = "From a \(m.chart.source) chart, matched to this recording (fit: \(m.quality.rawValue)). \(song.sections.count) parts, \(song.durationText), in the recording's key."
                 + (m.extended ? " The chart only wrote out part of the song, so its verse and chorus repeat to fill the full length." : "")
-        } else if let c = chartMatch {
-            icon = "exclamationmark.triangle.fill"; tint = Theme.warn
-            title = "Chart didn't match this recording"
-            detail = "A \(c.chart.source) chart was found but its chords don't fit what's heard, so it wasn't used. These chords come from the 30-second preview only and may not cover the whole song — check them, or paste a chart."
         } else {
-            icon = "exclamationmark.triangle.fill"; tint = Theme.warn
-            title = chartLooked ? "No chord chart found" : "Preview only"
-            detail = "Chords worked out from the 30-second preview only, so they may not cover the whole song. Check them by ear, or paste a chord chart for the full song."
+            icon = "waveform.badge.magnifyingglass"; tint = Theme.accent
+            title = "Chords from the 30-second preview"
+            detail = (chartMatch != nil
+                      ? "The chord chart we found doesn't fit this recording, so these chords come from the preview."
+                      : "There's no ready-made chord chart for this song yet, so these chords come from the preview.")
+                + " They're ready to play now, and you can get the whole song in one step below."
         }
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon).font(.system(size: 18)).foregroundStyle(tint).frame(width: 24)
@@ -599,6 +622,135 @@ struct AddSongView: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(tint.opacity(0.08)))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(tint.opacity(0.35)))
+    }
+
+    // MARK: whole song by ear
+
+    /// Get the whole song when there's no chart: listen while it plays on the Mac, or read an audio file.
+    private func wholeSongPanel(_ t: CatalogTrack) -> some View {
+        let trackSeconds = t.trackTimeMillis.map { Double($0) / 1000 }
+        return VStack(alignment: .leading, spacing: 12) {
+            switch listener.stage {
+            case .listening:
+                HStack(spacing: 12) {
+                    Image(systemName: "ear.fill").font(.system(size: 18)).foregroundStyle(Theme.accent).frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Listening… play “\(t.trackName)” on your Mac now").font(Theme.font(14, .semibold)).foregroundStyle(Theme.text)
+                        Text(trackSeconds.map { "\(clock(listener.seconds)) of \(clock($0)). Stops by itself when the song ends." } ?? "\(clock(listener.seconds)). Press Done when the song ends.")
+                            .font(Theme.font(12)).foregroundStyle(Theme.textDim)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Cancel") { listener.cancel() }.buttonStyle(SecondaryButtonStyle())
+                    Button { listener.stop() } label: { Label("Done", systemImage: "checkmark") }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(listener.heardSeconds < 20)
+                        .opacity(listener.heardSeconds < 20 ? 0.5 : 1)
+                }
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Theme.surface2)
+                        Capsule().fill(Theme.accentGradient)
+                            .frame(width: g.size.width * CGFloat(min(1, listener.seconds / max(1, trackSeconds ?? 240))))
+                    }
+                }
+                .frame(height: 6)
+                HStack(spacing: 3) {
+                    ForEach(0..<24, id: \.self) { i in
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Float(i) / 24 < listener.level ? Theme.success : Theme.surface2)
+                            .frame(width: 8, height: 10)
+                    }
+                    Text(listener.level > 0.02 ? "Hearing the song" : "Silent").font(Theme.font(11, .medium)).foregroundStyle(Theme.textFaint).padding(.leading, 6)
+                }
+                if listener.seconds > 8 && listener.heardSeconds < 1 {
+                    HStack(spacing: 10) {
+                        Label("Nothing heard yet. Start the song in Spotify, Music or your browser, with the volume up. If it's playing, Don't Fret may need permission to hear your Mac's sound.", systemImage: "info.circle")
+                            .font(Theme.font(12)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Open Settings") { WholeSongListener.openPrivacySettings() }
+                            .buttonStyle(.plain).font(Theme.font(12, .semibold)).foregroundStyle(Theme.accent)
+                    }
+                }
+            case .analysing:
+                HStack(spacing: 12) {
+                    ProgressView().controlSize(.small).frame(width: 24)
+                    Text("Working out the chords for the whole song…").font(Theme.font(14, .semibold)).foregroundStyle(Theme.text)
+                }
+            default:
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "music.note.list").font(.system(size: 18)).foregroundStyle(Theme.accent).frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Get the whole song").font(Theme.font(14, .semibold)).foregroundStyle(Theme.text)
+                        Text("Play it on your Mac in Spotify, Music or YouTube and Don't Fret listens along" + (trackSeconds.map { " (about \(clock($0)))" } ?? "") + ". Or choose an audio file of the song.")
+                            .font(Theme.font(12)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 10) {
+                    Button { startListening(t) } label: { Label("Listen While It Plays", systemImage: "ear") }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(!WholeSongListener.isSupported)
+                    Button { chooseAudioFile(t) } label: { Label("Choose Audio File…", systemImage: "doc.badge.plus") }
+                        .buttonStyle(SecondaryButtonStyle())
+                    Spacer()
+                }
+                if case .failed(let msg) = listener.stage {
+                    Label(msg, systemImage: "exclamationmark.triangle.fill").font(Theme.font(12)).foregroundStyle(Theme.warn)
+                } else if let e = wholeError {
+                    Label(e, systemImage: "exclamationmark.triangle.fill").font(Theme.font(12)).foregroundStyle(Theme.warn)
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.accent.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.accent.opacity(0.3)))
+    }
+
+    private func clock(_ s: Double) -> String {
+        let n = max(0, Int(s.rounded()))
+        return "\(n / 60):" + String(format: "%02d", n % 60)
+    }
+
+    private func startListening(_ t: CatalogTrack) {
+        player.stop(); chordPlayer.stop()
+        wholeError = nil
+        listener.start(songSeconds: t.trackTimeMillis.map { Double($0) / 1000 }) { result in useWhole(result, fromFile: false, file: nil, t) }
+    }
+
+    private func chooseAudioFile(_ t: CatalogTrack) {
+        player.stop(); chordPlayer.stop()
+        wholeError = nil
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an audio file of “\(t.trackName)”"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) { try Transcriber.analyze(url: url) }.value
+                await MainActor.run { useWhole(result, fromFile: true, file: url, t) }
+            } catch {
+                await MainActor.run {
+                    wholeError = (error as? TranscribeError) == .unreadable
+                        ? "Couldn't read that file. Songs bought or downloaded from streaming apps are often protected — try Listen While It Plays instead."
+                        : ((error as? LocalizedError)?.errorDescription ?? "Couldn't work out the chords from that file.")
+                }
+            }
+        }
+    }
+
+    private func useWhole(_ result: Transcription, fromFile: Bool, file: URL?, _ t: CatalogTrack) {
+        // a few seconds of audio isn't the whole song: keep the preview's chords
+        guard result.duration >= 45 else {
+            wholeError = "Only \(Int(result.duration)) seconds were heard — play more of the song to get all of it."
+            return
+        }
+        wholeAudio = result
+        wholeFromFile = fromFile
+        wholeFile = file
+        if transcription == nil { transcription = result }
+        useCapo = result.capo > 0 && progress.skill.rank <= 2
+        if case .review = phase {} else { phase = .review(t) }
     }
 
     /// Every section of the song with its chords, as they'll be played.
@@ -632,10 +784,11 @@ struct AddSongView: View {
                     }
                     Spacer()
                     if t.previewUrl == nil {
-                        Text("No preview available for this song, so it can't be listened to automatically.")
+                        Text("There's no preview to listen to, so play the whole song on your Mac below, or paste its chords.")
                             .font(Theme.font(11)).foregroundStyle(Theme.textFaint).frame(width: 220)
                     }
                 }
+                if t.previewUrl == nil { wholeSongPanel(t) }
             }
             HStack(spacing: 12) {
                 Text("1").font(Theme.font(13, .heavy)).foregroundStyle(Theme.onAccent).frame(width: 24, height: 24).background(Circle().fill(Theme.accent))

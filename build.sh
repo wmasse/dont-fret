@@ -34,6 +34,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Don’t Fret listens to your guitar to check the chords and strums you play, to tune your strings, and to record you in the Studio.</string>
   <key>NSCameraUsageDescription</key><string>Don’t Fret uses the camera when you record a video of yourself playing in the Studio.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>Don’t Fret listens to a song while it plays on your Mac, so it can work out the chords for the whole song. Nothing is recorded or saved.</string>
 </dict>
 </plist>
 PLIST

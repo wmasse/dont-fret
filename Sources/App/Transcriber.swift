@@ -622,7 +622,8 @@ enum Transcriber {
     static func makeSections(_ bars: [String], keyRoot: Int, minorKey: Bool, flat: Bool) -> [SongSection] {
         let n = bars.count
         // shortest period that explains most of the bars
-        for p in [1, 2, 3, 4, 6, 8] where p * 2 <= n {
+        // a whole song can cycle through a longer progression (say a 12- or 16-bar verse and chorus)
+        for p in [1, 2, 3, 4, 6, 8] + (n >= 32 ? [12, 16] : []) where p * (p >= 12 ? 3 : 2) <= n {
             let matches = (p..<n).filter { bars[$0] == bars[$0 - p] }.count
             let rate = Double(matches) / Double(n - p)
             guard rate >= 0.72 else { continue }
@@ -644,11 +645,34 @@ enum Transcriber {
             return [SongSection(name: "Main progression", chords: loop.joined(separator: " "), repeats: repeats)]
         }
         // no clear loop: 4-bar lines, identical neighbours become repeats, identical lines share a name
-        var lines: [String] = stride(from: 0, to: n, by: 4).map { bars[$0..<min(n, $0 + 4)].joined(separator: " ") }
-        if lines.count > 1, lines.last!.split(separator: " ").count < 2 { lines.removeLast() }
+        func close(_ a: [Substring], _ b: [Substring]) -> Bool { a.count == b.count && a.count >= 4 && zip(a, b).filter { $0 != $1 }.count <= 1 }
+        func split(from k: Int) -> [String] {
+            var ls: [String] = k > 0 ? [bars[0..<k].joined(separator: " ")] : []
+            ls += stride(from: k, to: n, by: 4).map { bars[$0..<min(n, $0 + 4)].joined(separator: " ") }
+            if ls.count > 1, ls.last!.split(separator: " ").count < 2 { ls.removeLast() }
+            return ls
+        }
+        var lines = split(from: 0)
+        var lead = 0
+        if n >= 32 {
+            // a whole song: start the 4-bar phrases where they repeat best (any bars before that are the intro),
+            // and treat a line that's one bar off a line already heard as that line, misheard
+            func snapped(_ ls: [String]) -> (lines: [String], repeats: Int) {
+                var seen: [String] = [], out = ls, hits = 0
+                for i in ls.indices {
+                    let bs = ls[i].split(separator: " ")
+                    if let same = seen.first(where: { close($0.split(separator: " "), bs) }) { out[i] = same; hits += 1 } else { seen.append(ls[i]) }
+                }
+                return (out, hits)
+            }
+            let best = (0..<4).map { k in (k, snapped(split(from: k))) }.max { $0.1.repeats < $1.1.repeats }!
+            lead = best.0
+            lines = best.1.lines
+        }
         var names: [String: String] = [:]
         var out: [SongSection] = []
-        for l in lines {
+        for (i, l) in lines.enumerated() {
+            if i == 0 && lead > 0 { out.append(SongSection(name: "Intro", chords: l)); continue }
             if names[l] == nil { names[l] = "Part \(Character(UnicodeScalar(65 + min(25, names.count))!))" }
             if var last = out.last, last.chords == l {
                 last.repeats += 1

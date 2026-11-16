@@ -50,6 +50,7 @@ struct SelfTest {
 
     static func main() {
         if CommandLine.arguments.contains("--chart-bench") { chartBench(); return }
+        if CommandLine.arguments.contains("--whole-bench") { wholeBench(); return }
         var freeOK = 0, verifyOK = 0, total = 0, falseAccept = 0, falseTotal = 0
         var misses: [String] = []
         var byLevel: [Int: (Int, Int)] = [:]
