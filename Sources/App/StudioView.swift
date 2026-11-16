@@ -251,7 +251,7 @@ struct TakeCard: View {
                 } else if !peaks.isEmpty {
                     WaveformShape(peaks: peaks).fill(Theme.accent.opacity(0.8)).padding(14)
                 }
-                Text(formatTime(take.length)).font(Theme.font(11, .bold)).monospacedDigit()
+                Text(formatTime(take.length, tenths: take.length < 10)).font(Theme.font(11, .bold)).monospacedDigit()
                     .foregroundStyle(.white).padding(.horizontal, 7).padding(.vertical, 3)
                     .background(Capsule().fill(.black.opacity(0.6))).padding(8)
             }
@@ -333,6 +333,16 @@ struct TakeEditorView: View {
     @State private var name = ""
     @State private var layerStart: Double?
     @State private var armed = false
+    @State private var punch: ClosedRange<Double>?
+    @State private var selection: ClosedRange<Double>?
+    @State private var selectedLayer: String?
+    @State private var zoom: Double = 1
+    @State private var history: [Take] = []
+    @State private var future: [Take] = []
+    @State private var lastKey = ""
+    @State private var lastChange = Date.distantPast
+    @State private var notice: String?
+    @State private var aligning: String?
     @State private var format: StudioRenderer.Format = .m4a
     @State private var exporting: Double?
     @State private var exported: URL?
@@ -341,15 +351,59 @@ struct TakeEditorView: View {
 
     private var take: Take { store.take(takeID) ?? Take(id: takeID, name: "", created: Date(), isVideo: false, file: "", audioFile: "", duration: 0) }
 
-    private func change(_ f: (inout Take) -> Void) {
-        var t = take
+    /// What decides when and where audio plays: if it changes while playing, playback is re-queued.
+    private func timingKey(_ t: Take) -> String {
+        t.kept.map { String(format: "%.3f-%.3f", $0.from, $0.to) }.joined(separator: ",") + "|" +
+        t.layers.map { "\($0.id)@\(String(format: "%.3f/%.3f/%.3f", $0.start, $0.inPoint, $0.outPoint ?? -1))" }.joined(separator: ",")
+    }
+
+    /// Every edit goes through here so it can be undone. Quick repeats of the same edit (dragging a slider) are one step.
+    private func change(_ key: String = "", _ f: (inout Take) -> Void) {
+        let before = take
+        var t = before
         f(&t)
+        guard t != before else { return }
+        let now = Date()
+        if key.isEmpty || key != lastKey || now.timeIntervalSince(lastChange) > 0.8 {
+            history.append(before)
+            if history.count > 200 { history.removeFirst() }
+        }
+        lastKey = key
+        lastChange = now
+        future.removeAll()
+        apply(t, from: before)
+    }
+
+    private func apply(_ t: Take, from before: Take) {
         store.update(t)
         playback.update(t)
+        if timingKey(before) != timingKey(t) {
+            playback.load(t, store: store)
+            if playback.playing && !dubber.recording { playback.play(t, store: store, from: playback.position, after: 0.03) }
+        }
+        if let s = selectedLayer, !t.layers.contains(where: { $0.id == s }) { selectedLayer = nil }
+    }
+
+    private func undo() {
+        guard let prev = history.popLast() else { return }
+        let now = take
+        future.append(now)
+        lastKey = ""
+        apply(prev, from: now)
+        name = prev.name
+    }
+
+    private func redo() {
+        guard let next = future.popLast() else { return }
+        let now = take
+        history.append(now)
+        lastKey = ""
+        apply(next, from: now)
+        name = next.name
     }
 
     private func editBinding<V>(_ kp: WritableKeyPath<TakeEdit, V>, custom: Bool = true) -> Binding<V> {
-        Binding(get: { take.edit[keyPath: kp] }, set: { v in change { $0.edit[keyPath: kp] = v; if custom { $0.edit.preset = "Custom" } } })
+        Binding(get: { take.edit[keyPath: kp] }, set: { v in change("\(kp)") { $0.edit[keyPath: kp] = v; if custom { $0.edit.preset = "Custom" } } })
     }
 
     var body: some View {
@@ -379,6 +433,10 @@ struct TakeEditorView: View {
             dubber.shutdown()
         }
         .onChange(of: playback.playing) { _, p in if !p && dubber.recording { dubber.stop() } }
+        .onChange(of: playback.position) { _, p in
+            // recording over a selected part stops shortly after it ends
+            if dubber.recording, let r = punch, p >= r.upperBound + 0.5 { dubber.stop(); playback.stop() }
+        }
         .onChange(of: dubber.running) { _, r in if r && armed { beginLayer() } }
         .confirmationDialog("Delete \(take.name)?", isPresented: $confirmDelete) {
             Button("Move to Trash", role: .destructive) { playback.stop(); store.delete(take); onBack() }
@@ -393,25 +451,34 @@ struct TakeEditorView: View {
             VStack(alignment: .leading, spacing: 4) {
                 TextField("Name", text: $name)
                     .textFieldStyle(.plain).font(Theme.font(28, .bold)).foregroundStyle(Theme.text)
-                    .onSubmit { change { $0.name = name.isEmpty ? "Untitled" : name } }
-                    .onChange(of: name) { _, n in if !n.isEmpty { change { $0.name = n } } }
+                    .onSubmit { change("name") { $0.name = name.isEmpty ? "Untitled" : name } }
+                    .onChange(of: name) { _, n in if !n.isEmpty { change("name") { $0.name = n } } }
                 HStack(spacing: 8) {
                     Pill(icon: take.isVideo ? "video" : "mic", text: take.isVideo ? "Video" : "Audio")
-                    Pill(icon: "clock", text: "\(formatTime(take.length)) of \(formatTime(take.duration))")
+                    Pill(icon: "clock", text: "\(formatTime(take.length, tenths: take.duration < 60)) of \(formatTime(take.duration, tenths: take.duration < 60))")
                     Pill(icon: "square.3.layers.3d", text: "\(take.layers.count + 1) track\(take.layers.isEmpty ? "" : "s")")
+                    if !take.edit.cuts.isEmpty { Pill(icon: "scissors", text: "\(take.edit.cuts.count) cut\(take.edit.cuts.count == 1 ? "" : "s")") }
                     Text(take.created.formatted(date: .abbreviated, time: .shortened)).font(Theme.font(12)).foregroundStyle(Theme.textFaint)
                 }
             }
             Spacer()
+            Button(action: undo) { Image(systemName: "arrow.uturn.backward") }
+                .buttonStyle(IconButtonStyle()).disabled(history.isEmpty)
+                .keyboardShortcut("z", modifiers: .command)
+                .help("Undo (⌘Z)").accessibilityLabel("Undo")
+            Button(action: redo) { Image(systemName: "arrow.uturn.forward") }
+                .buttonStyle(IconButtonStyle()).disabled(future.isEmpty)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .help("Redo (⇧⌘Z)").accessibilityLabel("Redo")
             Button(role: .destructive) { confirmDelete = true } label: { Image(systemName: "trash") }
-                .buttonStyle(IconButtonStyle()).help("Delete this take")
+                .buttonStyle(IconButtonStyle()).help("Delete this take").accessibilityLabel("Delete this take")
         }
     }
 
     // MARK: timeline
 
     private var timelineCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Button { playback.toggle(take, store: store) } label: {
                     Label(playback.playing ? "Pause" : "Play", systemImage: playback.playing ? "pause.fill" : "play.fill").frame(minWidth: 60)
@@ -420,16 +487,27 @@ struct TakeEditorView: View {
                 .disabled(dubber.recording)
                 Button { playback.seek(take, store: store, to: take.edit.trimStart) } label: { Image(systemName: "backward.end.fill") }
                     .buttonStyle(IconButtonStyle()).help("Back to the start")
-                Text("\(formatTime(playback.position - take.edit.trimStart, tenths: true)) / \(formatTime(take.length, tenths: true))")
+                    .accessibilityLabel("Back to the start")
+                Text("\(formatTime(playback.outputPosition, tenths: true)) / \(formatTime(take.length, tenths: true))")
                     .font(Theme.font(14, .semibold)).monospacedDigit().foregroundStyle(Theme.textDim)
+                if playback.loop != nil {
+                    Label("Looping", systemImage: "repeat").font(Theme.font(12, .semibold)).foregroundStyle(Theme.accent)
+                }
                 Spacer()
                 if let e = playback.error ?? dubber.error {
                     Text(e).font(Theme.font(12)).foregroundStyle(Theme.warn).lineLimit(2)
                 }
+                HStack(spacing: 4) {
+                    Button { zoom = max(1, zoom / 2) } label: { Image(systemName: "minus.magnifyingglass") }
+                        .buttonStyle(IconButtonStyle(size: 30)).disabled(zoom <= 1).help("Zoom out").accessibilityLabel("Zoom out")
+                    Text("\(Int(zoom))×").font(Theme.font(12, .semibold)).monospacedDigit().foregroundStyle(Theme.textDim).frame(width: 28)
+                    Button { zoom = min(16, zoom * 2) } label: { Image(systemName: "plus.magnifyingglass") }
+                        .buttonStyle(IconButtonStyle(size: 30)).disabled(zoom >= 16).help("Zoom in for fine edits").accessibilityLabel("Zoom in")
+                }
                 Button(action: toggleLayer) {
                     HStack(spacing: 7) {
                         Image(systemName: dubber.recording ? "stop.fill" : "plus.circle.fill")
-                        Text(dubber.recording ? "Stop Layer" : (armed ? "Getting ready…" : "Record a Layer"))
+                        Text(dubber.recording ? "Stop Layer" : (armed ? "Getting ready…" : (selection == nil ? "Record a Layer" : "Record Over Selection")))
                     }
                     .font(Theme.font(14, .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 16).padding(.vertical, 9)
@@ -439,19 +517,65 @@ struct TakeEditorView: View {
                 .buttonStyle(.plain)
                 .help("Play the take and record another part over it — a second guitar, vocals, a solo. Wear headphones.")
             }
-            TimelineLanes(take: take, store: store, position: playback.position,
+            if let sel = selection { selectionBar(sel) } else {
+                Text("Drag across the tracks to select a part — then cut it out, keep only it, loop it or record a new layer over it. Click to jump.")
+                    .font(Theme.font(12)).foregroundStyle(Theme.textFaint)
+            }
+            TimelineLanes(take: take, store: store, playback: playback, selection: $selection, selectedLayer: $selectedLayer,
+                          zoom: zoom, aligning: aligning,
+                          change: { key, f in change(key, f) },
                           seek: { playback.seek(take, store: store, to: $0) },
-                          setTrim: { s, e in change { $0.edit.trimStart = s; $0.edit.trimEnd = e } },
-                          setLayer: { l in change { t in if let i = t.layers.firstIndex(where: { $0.id == l.id }) { t.layers[i] = l } } },
-                          deleteLayer: { l in store.deleteLayer(l, from: take); playback.load(take, store: store) })
-            Text("Drag the handles on the main track to trim. Drag a layer to line it up; click anywhere to jump there.")
-                .font(Theme.font(12)).foregroundStyle(Theme.textFaint)
+                          align: autoAlign)
+            if let notice {
+                Label(notice, systemImage: "info.circle").font(Theme.font(12.5, .medium)).foregroundStyle(Theme.textDim)
+            }
+            if dubber.recording {
+                Label("Recording a layer — cut parts still play while you record, so everything stays lined up.", systemImage: "record.circle")
+                    .font(Theme.font(12.5, .medium)).foregroundStyle(recordRed)
+            }
         }
         .card()
     }
 
+    private func selectionBar(_ sel: ClosedRange<Double>) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "selection.pin.in.out").foregroundStyle(Theme.accent)
+            Text("\(formatTime(sel.lowerBound, tenths: true)) – \(formatTime(sel.upperBound, tenths: true))  ·  \(String(format: "%.1f", sel.upperBound - sel.lowerBound)) s")
+                .font(Theme.font(12.5, .semibold)).monospacedDigit().foregroundStyle(Theme.text)
+            Spacer(minLength: 8)
+            Button { playback.loop = nil; playback.play(take, store: store, from: sel.lowerBound) } label: { Label("Play It", systemImage: "play.fill") }
+                .buttonStyle(ToolButtonStyle())
+            Button {
+                if playback.loop == nil { playback.loop = sel; playback.play(take, store: store, from: sel.lowerBound) } else { playback.loop = nil }
+            } label: { Label(playback.loop == nil ? "Loop" : "Stop Loop", systemImage: "repeat") }
+                .buttonStyle(ToolButtonStyle(tint: playback.loop == nil ? nil : Theme.accent))
+            Button {
+                playback.loop = nil
+                change { $0.cut(sel.lowerBound, sel.upperBound) }
+                selection = nil
+                notice = "Cut out \(String(format: "%.1f", sel.upperBound - sel.lowerBound)) s from every track. Undo (⌘Z) or Restore brings it back."
+            } label: { Label("Cut Out", systemImage: "scissors") }
+                .buttonStyle(ToolButtonStyle(tint: recordRed))
+                .help("Remove this part from the main track and every layer")
+            Button {
+                playback.loop = nil
+                change { $0.keepOnly(sel.lowerBound, sel.upperBound) }
+                selection = nil
+            } label: { Label("Keep Only This", systemImage: "crop") }
+                .buttonStyle(ToolButtonStyle())
+                .help("Trim everything before and after this part")
+            Button { selection = nil; playback.loop = nil } label: { Image(systemName: "xmark") }
+                .buttonStyle(ToolButtonStyle()).help("Clear the selection").accessibilityLabel("Clear the selection")
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.accent.opacity(0.08)))
+    }
+
     private func toggleLayer() {
         if dubber.recording { dubber.stop(); playback.stop(); return }
+        playback.loop = nil
+        punch = selection
+        notice = nil
         armed = true
         if dubber.running { beginLayer() } else { dubber.prepare(.audio) }
     }
@@ -461,21 +585,47 @@ struct TakeEditorView: View {
         let id = UUID().uuidString
         let file = "\(takeID)-layer-\(id.prefix(8)).m4a"
         let t = take
-        var playAt = Date()
+        let range = punch
+        // a selected part gets two seconds of run-up; otherwise start where the playhead is
+        let from: Double = range.map { max(0, $0.lowerBound - 2) }
+            ?? (t.outputTime(playback.position) >= t.length - 0.1 ? t.edit.trimStart : playback.position)
         dubber.onStart = { recordedAt in
-            // the take starts playing a moment after the recorder; remember the gap to line the layer up
-            playAt = Date().addingTimeInterval(0.12)
-            playback.play(t, store: store, from: t.edit.trimStart, after: 0.12)
-            layerStart = t.edit.trimStart - playAt.timeIntervalSince(recordedAt)
+            // the take starts a moment after the recorder; the gap lines the layer up
+            let playAt = Date().addingTimeInterval(0.12)
+            playback.play(t, store: store, from: from, raw: true, after: 0.12)
+            layerStart = from - playAt.timeIntervalSince(recordedAt)
         }
-        dubber.onFinish = { url, seconds in
+        dubber.onFinish = { _, seconds in
             playback.stop()
-            let n = take.layers.count + 1
-            let layer = Overdub(id: id, name: "Layer \(n)", file: file, start: layerStart ?? t.edit.trimStart, length: seconds)
+            let start = layerStart ?? from
+            var layer = Overdub(id: id, name: "Layer \(take.layers.count + 1)", file: file, start: start, length: seconds)
+            if let r = range {
+                layer.inPoint = max(0, r.lowerBound - start)
+                layer.outPoint = min(seconds, max(layer.inPoint + 0.1, r.upperBound - start))
+            }
             change { $0.layers.append(layer) }
-            playback.load(take, store: store)
+            selectedLayer = id
+            punch = nil
         }
         dubber.start(to: store.url(file))
+    }
+
+    private func autoAlign(_ l: Overdub) {
+        aligning = l.id
+        notice = nil
+        let t = take
+        Task { @MainActor in
+            let r = await StudioMedia.align(l, main: store.url(t.audioFile), layer: store.url(l.file))
+            aligning = nil
+            guard let r else {
+                notice = "Couldn't find a clear beat to line \(l.name) up with — drag it, or nudge it with the arrows."
+                return
+            }
+            let ms = Int(((r - l.start) * 1000).rounded())
+            if abs(ms) < 3 { notice = "\(l.name) is already lined up."; return }
+            change { tk in if let i = tk.layers.firstIndex(where: { $0.id == l.id }) { tk.layers[i].start = r } }
+            notice = "Lined up \(l.name): moved it \(abs(ms)) ms \(ms < 0 ? "earlier" : "later"). Undo (⌘Z) if it sounds wrong."
+        }
     }
 
     // MARK: sound
@@ -486,7 +636,7 @@ struct TakeEditorView: View {
             FlowLayout(spacing: 8) {
                 ForEach(TakeEdit.presets, id: \.name) { p in
                     Chip(title: p.name, icon: p.icon, selected: take.edit.preset == p.name) {
-                        change { p.apply(&$0.edit); $0.edit.preset = p.name }
+                        change("preset") { p.apply(&$0.edit); $0.edit.preset = p.name }
                     }
                 }
             }
@@ -606,139 +756,408 @@ struct TakeEditorView: View {
 
 // MARK: - Timeline
 
-/// The main track (with trim handles) and any layers, on one shared time ruler.
+struct ToolButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.font(12.5, .semibold))
+            .foregroundStyle(tint ?? Theme.text)
+            .padding(.horizontal, 11).padding(.vertical, 6)
+            .background(Capsule().fill((tint ?? Theme.text).opacity(configuration.isPressed ? 0.22 : 0.1)))
+            .contentShape(Capsule())
+    }
+}
+
+private let layerColors: [Color] = [Color(hex: 0xB78CFF), Color(hex: 0x3DD68C), Color(hex: 0xF5B83D), Color(hex: 0xFF7AB6), Color(hex: 0x5CC8FF)]
+
+/// The main track and its layers on one shared time ruler: select, cut, trim, move and mix.
 struct TimelineLanes: View {
     var take: Take
     @ObservedObject var store: StudioStore
-    var position: Double
+    @ObservedObject var playback: StudioPlayback
+    @Binding var selection: ClosedRange<Double>?
+    @Binding var selectedLayer: String?
+    var zoom: Double
+    var aligning: String?
+    var change: (String, (inout Take) -> Void) -> Void
     var seek: (Double) -> Void
-    var setTrim: (Double, Double?) -> Void
-    var setLayer: (Overdub) -> Void
-    var deleteLayer: (Overdub) -> Void
+    var align: (Overdub) -> Void
 
     @State private var peaks: [String: [Float]] = [:]
-    @State private var dragStart: Double?
-    @State private var layerDrag: (id: String, from: Double)?
+    @State private var dragBase: Double?
+    @State private var layerBase: Overdub?
 
-    private let laneHeight: CGFloat = 78
-    private let layerHeight: CGFloat = 46
+    private let ruler: CGFloat = 20
+    private let mainH: CGFloat = 84
+    private let layerH: CGFloat = 76
+    private let gap: CGFloat = 8
     private var total: Double { max(take.duration, take.layers.map { $0.start + $0.length }.max() ?? 0, 0.5) }
+    private var height: CGFloat { ruler + gap + mainH + CGFloat(take.layers.count) * (layerH + gap) }
 
     var body: some View {
-        GeometryReader { g in
-            let w = g.size.width - 160
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    laneLabel("Main", icon: take.isVideo ? "video" : "mic", sub: "Your take")
-                    mainLane(width: w)
-                }
-                ForEach(take.layers) { l in
-                    HStack(spacing: 10) {
-                        layerControls(l)
-                        layerLane(l, width: w)
+        HStack(alignment: .top, spacing: 10) {
+            headers.frame(width: 250)
+            GeometryReader { g in
+                let w = max(100, g.size.width * CGFloat(zoom))
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: zoom > 1) {
+                        lanes(w)
+                            .frame(width: w, height: height, alignment: .topLeading)
+                            .overlay(alignment: .topLeading) {
+                                Color.clear.frame(width: 1, height: 1).offset(x: x(playback.position, w)).id("playhead")
+                            }
                     }
+                    .onChange(of: zoom) { _, _ in proxy.scrollTo("playhead", anchor: .center) }
                 }
             }
+            .frame(height: height + (zoom > 1 ? 14 : 0))
         }
-        .frame(height: laneHeight + CGFloat(take.layers.count) * (layerHeight + 8))
         .task(id: [take.audioFile] + take.layers.map(\.file)) {
             for f in [take.audioFile] + take.layers.map(\.file) where peaks[f] == nil {
-                peaks[f] = await StudioMedia.peaks(store.url(f), bins: 500)
+                peaks[f] = await StudioMedia.peaks(store.url(f), bins: f == take.audioFile ? 1600 : 800)
             }
         }
     }
 
-    private func x(_ t: Double, _ w: CGFloat) -> CGFloat { CGFloat(t / total) * w }
+    // MARK: geometry & snapping
 
-    private func laneLabel(_ title: String, icon: String, sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label(title, systemImage: icon).font(Theme.font(13, .semibold)).foregroundStyle(Theme.text)
-            Text(sub).font(Theme.font(11)).foregroundStyle(Theme.textFaint)
-        }
-        .frame(width: 150, alignment: .leading)
+    private func x(_ t: Double, _ w: CGFloat) -> CGFloat { CGFloat(t / total) * w }
+    private func time(_ px: CGFloat, _ w: CGFloat) -> Double { max(0, min(total, Double(px / w) * total)) }
+
+    /// Edges worth lining things up with.
+    private func snapPoints(skipLayer: String? = nil, withSelection: Bool = true) -> [Double] {
+        var p = [0, take.duration, take.edit.trimStart, take.end, playback.position]
+        for c in take.edit.cuts { p += [c.start, c.end] }
+        for l in take.layers where l.id != skipLayer { p += [l.used.from, l.used.to] }
+        if withSelection, let s = selection { p += [s.lowerBound, s.upperBound] }
+        return p
     }
 
-    private func mainLane(width w: CGFloat) -> some View {
-        let s = take.edit.trimStart, e = take.end
-        return ZStack(alignment: .topLeading) {
+    private func snap(_ t: Double, _ w: CGFloat, skipLayer: String? = nil, withSelection: Bool = true) -> Double {
+        let tolerance = 7 / Double(w) * total
+        var best = t, d = tolerance
+        for p in snapPoints(skipLayer: skipLayer, withSelection: withSelection) where abs(p - t) < d { best = p; d = abs(p - t) }
+        return best
+    }
+
+    /// Drag to select a part; click to jump there.
+    private func selectGesture(_ w: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("lanes"))
+            .onChanged { v in
+                guard abs(v.translation.width) >= 3 else { return }
+                let lo = take.edit.trimStart, hi = take.end
+                let a = max(lo, min(hi, snap(time(v.startLocation.x, w), w, withSelection: false)))
+                let b = max(lo, min(hi, snap(time(v.location.x, w), w, withSelection: false)))
+                selection = min(a, b)...max(a, b)
+            }
+            .onEnded { v in
+                if abs(v.translation.width) < 3 {
+                    selection = nil
+                    playback.loop = nil
+                    seek(time(v.location.x, w))
+                } else if let s = selection, s.upperBound - s.lowerBound < 0.05 {
+                    selection = nil
+                }
+            }
+    }
+
+    // MARK: headers
+
+    private var headers: some View {
+        VStack(alignment: .leading, spacing: gap) {
+            HStack {
+                Text("TRACKS").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+                Spacer()
+                if !playback.solo.isEmpty {
+                    Button("Clear solo") { playback.solo = [] }.buttonStyle(.plain).font(Theme.font(11, .semibold)).foregroundStyle(Theme.accent)
+                }
+            }
+            .frame(height: ruler)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: take.isVideo ? "video.fill" : "mic.fill").foregroundStyle(Theme.accent)
+                    Text("Main").font(Theme.font(13.5, .semibold)).foregroundStyle(Theme.text)
+                    Spacer()
+                    soloButton("main")
+                }
+                Text(take.layers.isEmpty ? "Your take. Drag its edges to trim. Press Record a Layer to stack another part on top." : "Your take. Drag its edges to trim.")
+                    .font(Theme.font(11)).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(height: mainH, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface2.opacity(0.5)))
+            ForEach(Array(take.layers.enumerated()), id: \.element.id) { i, l in
+                layerHeader(l, color: layerColors[i % layerColors.count])
+            }
+        }
+    }
+
+    private func soloButton(_ id: String) -> some View {
+        let on = playback.solo.contains(id)
+        return Button {
+            if on { playback.solo.remove(id) } else { playback.solo.insert(id) }
+        } label: {
+            Text("S").font(Theme.font(11, .heavy)).frame(width: 20, height: 18)
+                .foregroundStyle(on ? Theme.onAccent : Theme.textDim)
+                .background(RoundedRectangle(cornerRadius: 4).fill(on ? Theme.warn : Theme.text.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .help(on ? "Stop soloing" : "Solo: hear only soloed tracks")
+        .accessibilityLabel(on ? "Solo on" : "Solo")
+    }
+
+    private func setLayer(_ id: String, key: String, _ f: @escaping (inout Overdub) -> Void) {
+        change(key + id) { t in if let i = t.layers.firstIndex(where: { $0.id == id }) { f(&t.layers[i]) } }
+    }
+
+    private func layerHeader(_ l: Overdub, color: Color) -> some View {
+        let selected = selectedLayer == l.id
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 9, height: 9)
+                TextField("Layer name", text: Binding(get: { l.name }, set: { v in setLayer(l.id, key: "name") { $0.name = v } }))
+                    .textFieldStyle(.plain).font(Theme.font(13, .semibold)).foregroundStyle(l.muted ? Theme.textFaint : Theme.text)
+                Button { setLayer(l.id, key: "") { $0.muted.toggle() } } label: {
+                    Text("M").font(Theme.font(11, .heavy)).frame(width: 20, height: 18)
+                        .foregroundStyle(l.muted ? Theme.onAccent : Theme.textDim)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(l.muted ? recordRed : Theme.text.opacity(0.08)))
+                }
+                .buttonStyle(.plain).help(l.muted ? "Unmute" : "Mute").accessibilityLabel(l.muted ? "Unmute" : "Mute")
+                soloButton(l.id)
+                Button { align(l) } label: {
+                    if aligning == l.id { ProgressView().controlSize(.mini) } else { Image(systemName: "wand.and.stars") }
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.textDim).frame(width: 18)
+                .help("Auto-align: line this layer up with the main track's rhythm").accessibilityLabel("Auto-align")
+                Button { change("") { t in t.layers.removeAll { $0.id == l.id } } } label: { Image(systemName: "trash") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textDim).help("Delete this layer (Undo brings it back)").accessibilityLabel("Delete layer")
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.wave.2").font(.system(size: 10)).foregroundStyle(Theme.textFaint).frame(width: 14)
+                Slider(value: Binding(get: { l.volume }, set: { v in setLayer(l.id, key: "vol") { $0.volume = v } }), in: 0...1.5)
+                    .controlSize(.mini)
+                Text("\(Int((l.volume * 100).rounded()))%").font(Theme.font(10.5, .semibold)).monospacedDigit().foregroundStyle(Theme.textDim).frame(width: 34, alignment: .trailing)
+            }
+            HStack(spacing: 6) {
+                Text("L").font(Theme.font(10, .bold)).foregroundStyle(Theme.textFaint).frame(width: 14)
+                Slider(value: Binding(get: { l.pan }, set: { v in setLayer(l.id, key: "pan") { $0.pan = abs(v) < 0.06 ? 0 : v } }), in: -1...1)
+                    .controlSize(.mini)
+                Text("R").font(Theme.font(10, .bold)).foregroundStyle(Theme.textFaint)
+                Button { setLayer(l.id, key: "nudge") { $0.start -= 0.01 } } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textDim).help("Nudge 10 ms earlier").accessibilityLabel("Nudge earlier")
+                Button { setLayer(l.id, key: "nudge") { $0.start += 0.01 } } label: { Image(systemName: "chevron.right") }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textDim).help("Nudge 10 ms later").accessibilityLabel("Nudge later")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .frame(height: layerH, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(selected ? color.opacity(0.14) : Theme.surface2.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? color.opacity(0.7) : .clear, lineWidth: 1.5))
+        .contentShape(Rectangle())
+        .onTapGesture { selectedLayer = l.id }
+    }
+
+    // MARK: lanes
+
+    private func lanes(_ w: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            VStack(alignment: .leading, spacing: gap) {
+                rulerView(w).frame(height: ruler)
+                mainLane(w).frame(height: mainH)
+                ForEach(Array(take.layers.enumerated()), id: \.element.id) { i, l in
+                    layerLane(l, color: layerColors[i % layerColors.count], w).frame(height: layerH)
+                }
+            }
+            overlays(w).allowsHitTesting(false)
+        }
+        .coordinateSpace(name: "lanes")
+    }
+
+    private func rulerView(_ w: CGFloat) -> some View {
+        let pps = Double(w) / total
+        let step = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60].first { $0 * pps >= 56 } ?? 120
+        return Canvas { ctx, size in
+            var t = 0.0
+            while t <= total + 0.001 {
+                let px = CGFloat(t * pps)
+                ctx.fill(Path(CGRect(x: px, y: size.height - 6, width: 1, height: 6)), with: .color(Theme.text.opacity(0.3)))
+                ctx.draw(Text(step < 1 ? formatTime(t, tenths: true) : formatTime(t)).font(Theme.font(9.5, .medium)).foregroundColor(Theme.textFaint),
+                         at: CGPoint(x: px + 3, y: 6), anchor: .topLeading)
+                t += step
+            }
+        }
+        .contentShape(Rectangle())
+        .gesture(SpatialTapGesture().onEnded { v in seek(time(v.location.x, w)) })
+        .help("Click to jump")
+    }
+
+    private func mainLane(_ w: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 10).fill(Theme.surface2)
             WaveformShape(peaks: peaks[take.audioFile] ?? [])
                 .fill(Theme.accent.opacity(0.85))
-                .frame(width: x(take.duration, w), height: laneHeight - 16).offset(y: 8)
-            // trimmed-away parts
-            Rectangle().fill(Theme.bg.opacity(0.72)).frame(width: max(0, x(s, w)), height: laneHeight)
-            Rectangle().fill(Theme.bg.opacity(0.72)).frame(width: max(0, w - x(e, w)), height: laneHeight).offset(x: x(e, w))
-            handle(at: x(s, w), w: w, isStart: true)
-            handle(at: x(e, w), w: w, isStart: false)
-            playhead(w)
+                .frame(width: x(take.duration, w), height: mainH - 16).offset(y: 8)
+            ForEach(take.edit.cuts) { c in
+                cutMark(c, w)
+            }
+            trimHandle(isStart: true, w)
+            trimHandle(isStart: false, w)
         }
-        .frame(width: w, height: laneHeight)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
-        .gesture(SpatialTapGesture().onEnded { v in seek(Double(v.location.x / w) * total) })
-        .accessibilityElement()
-        .accessibilityLabel("Main track, trimmed from \(formatTime(s)) to \(formatTime(e))")
+        .gesture(selectGesture(w))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Main track")
     }
 
-    private func handle(at px: CGFloat, w: CGFloat, isStart: Bool) -> some View {
-        ZStack {
+    private func cutMark(_ c: Cut, _ w: CGFloat) -> some View {
+        let width = max(3, x(c.end, w) - x(c.start, w))
+        return VStack(spacing: 0) {
+            Button { change("") { t in t.edit.cuts.removeAll { $0.id == c.id } } } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.uturn.backward")
+                    if width > 70 { Text("Restore") }
+                }
+                .font(Theme.font(10, .bold)).foregroundStyle(.white)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(Capsule().fill(recordRed))
+            }
+            .buttonStyle(.plain)
+            .help("Bring this cut part back")
+            .accessibilityLabel("Restore cut part")
+            .padding(.top, 5)
+            Spacer()
+        }
+        .frame(width: width, height: mainH)
+        .offset(x: x(c.start, w))
+    }
+
+    private func trimHandle(isStart: Bool, _ w: CGFloat) -> some View {
+        let px = x(isStart ? take.edit.trimStart : take.end, w)
+        return ZStack {
             Rectangle().fill(Theme.accent).frame(width: 3)
             RoundedRectangle(cornerRadius: 4).fill(Theme.accent).frame(width: 14, height: 30)
                 .overlay(Image(systemName: "line.3.vertical").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.onAccent))
         }
-        .frame(width: 16, height: laneHeight)
+        .frame(width: 16, height: mainH)
         .contentShape(Rectangle())
         .offset(x: px - 8)
-        .gesture(DragGesture(minimumDistance: 1).onChanged { v in
-            let base = dragStart ?? (isStart ? take.edit.trimStart : take.end)
-            if dragStart == nil { dragStart = base }
-            let t = max(0, min(take.duration, base + Double(v.translation.width / w) * total))
-            if isStart { setTrim(min(t, take.end - 0.5), take.edit.trimEnd) }
-            else { let end = max(t, take.edit.trimStart + 0.5); setTrim(take.edit.trimStart, end >= take.duration - 0.01 ? nil : end) }
-        }.onEnded { _ in dragStart = nil })
+        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("lanes")).onChanged { v in
+            let t = max(0, min(take.duration, snap(time(v.location.x, w), w)))
+            change("trim") { tk in
+                if isStart { tk.edit.trimStart = min(t, tk.end - 0.3) }
+                else { let e = max(t, tk.edit.trimStart + 0.3); tk.edit.trimEnd = e >= tk.duration - 0.01 ? nil : e }
+            }
+        })
         .help(isStart ? "Drag to trim the start" : "Drag to trim the end")
+        .accessibilityLabel(isStart ? "Trim start" : "Trim end")
         .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
     }
 
-    private func playhead(_ w: CGFloat) -> some View {
-        Rectangle().fill(Theme.text).frame(width: 2, height: laneHeight).offset(x: x(position, w) - 1)
-            .allowsHitTesting(false)
-    }
-
-    private func layerControls(_ l: Overdub) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(l.name).font(Theme.font(12.5, .semibold)).foregroundStyle(l.muted ? Theme.textFaint : Theme.text).lineLimit(1)
-                Spacer(minLength: 0)
-                Button { var m = l; m.muted.toggle(); setLayer(m) } label: { Image(systemName: l.muted ? "speaker.slash.fill" : "speaker.wave.2.fill") }
-                    .buttonStyle(.plain).foregroundStyle(l.muted ? Theme.warn : Theme.textDim).help(l.muted ? "Unmute" : "Mute")
-                Button { deleteLayer(l) } label: { Image(systemName: "xmark.circle") }
-                    .buttonStyle(.plain).foregroundStyle(Theme.textDim).help("Delete this layer")
+    private func layerLane(_ l: Overdub, color: Color, _ w: CGFloat) -> some View {
+        let p = peaks[l.file] ?? []
+        let used = l.used
+        let fullW = max(4, x(l.length, w))
+        let usedW = max(4, x(used.to - used.from, w))
+        let slice: [Float] = {
+            guard !p.isEmpty, l.length > 0 else { return [] }
+            let a = max(0, min(p.count, Int(l.inPoint / l.length * Double(p.count))))
+            let b = max(a, min(p.count, Int((used.to - l.start) / l.length * Double(p.count))))
+            return Array(p[a..<b])
+        }()
+        let selected = selectedLayer == l.id
+        return ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8).fill(Theme.surface2.opacity(0.45))
+                .contentShape(Rectangle())
+                .gesture(selectGesture(w))
+            // the whole recording, faint; the part in use is bright
+            WaveformShape(peaks: p).fill(Theme.textFaint.opacity(0.35))
+                .frame(width: fullW, height: layerH - 18).offset(x: x(l.start, w), y: 9)
+                .allowsHitTesting(false)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 6).fill(color.opacity(selected ? 0.22 : 0.13))
+                RoundedRectangle(cornerRadius: 6).strokeBorder(color.opacity(selected ? 0.95 : 0.4), lineWidth: selected ? 2 : 1)
+                WaveformShape(peaks: slice).fill((l.muted ? Theme.textFaint : color).opacity(0.95)).padding(.vertical, 6)
+                Text(l.name).font(Theme.font(10.5, .bold)).foregroundStyle(color).padding(.leading, 6).padding(.top, 3)
+                    .frame(maxHeight: .infinity, alignment: .top).allowsHitTesting(false)
             }
-            Slider(value: Binding(get: { l.volume }, set: { v in var m = l; m.volume = v; setLayer(m) }), in: 0...1.5)
-                .controlSize(.mini)
+            .frame(width: usedW, height: layerH - 6)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("lanes")).onChanged { v in
+                if layerBase?.id != l.id { layerBase = l }
+                selectedLayer = l.id
+                guard abs(v.translation.width) >= 2, let base = layerBase else { return }
+                // move it, snapping its start (or end) to nearby edges
+                let raw = base.start + Double(v.translation.width / w) * total
+                let lead = base.inPoint, tail = base.used.to - base.start
+                let s1 = snap(raw + lead, w, skipLayer: l.id) - lead
+                let s2 = snap(raw + tail, w, skipLayer: l.id) - tail
+                let start = abs(s1 - raw) <= abs(s2 - raw) && s1 != raw ? s1 : (s2 != raw ? s2 : raw)
+                setLayer(l.id, key: "move") { $0.start = start }
+            }.onEnded { _ in layerBase = nil })
+            .overlay(alignment: .leading) { layerEdge(l, isIn: true, w) }
+            .overlay(alignment: .trailing) { layerEdge(l, isIn: false, w) }
+            .offset(x: x(used.from, w), y: 3)
+            .help("Drag to move this layer; drag its edges to trim it")
         }
-        .frame(width: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(l.name) track")
     }
 
-    private func layerLane(_ l: Overdub, width w: CGFloat) -> some View {
-        ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 8).fill(Theme.surface2.opacity(0.6))
-            WaveformShape(peaks: peaks[l.file] ?? [])
-                .fill((l.muted ? Theme.textFaint : Theme.accent2).opacity(0.85))
-                .frame(width: max(4, x(l.length, w)), height: layerHeight - 10)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.accent2.opacity(0.12)))
-                .offset(x: x(l.start, w))
-                .gesture(DragGesture(minimumDistance: 2).onChanged { v in
-                    if layerDrag?.id != l.id { layerDrag = (l.id, l.start) }
-                    var m = l
-                    m.start = max(-l.length + 0.2, (layerDrag?.from ?? l.start) + Double(v.translation.width / w) * total)
-                    setLayer(m)
-                }.onEnded { _ in layerDrag = nil })
-                .help("Drag to line this layer up with the main track")
-            Rectangle().fill(Theme.text).frame(width: 2, height: layerHeight).offset(x: x(position, w) - 1).allowsHitTesting(false)
+    private func layerEdge(_ l: Overdub, isIn: Bool, _ w: CGFloat) -> some View {
+        Rectangle().fill(Color.white.opacity(0.001))
+            .frame(width: 10)
+            .overlay(Capsule().fill(Theme.text.opacity(0.5)).frame(width: 3, height: 18))
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("lanes")).onChanged { v in
+                let t = snap(time(v.location.x, w), w, skipLayer: l.id) - l.start
+                setLayer(l.id, key: isIn ? "in" : "out") { d in
+                    if isIn { d.inPoint = max(0, min(t, (d.outPoint ?? d.length) - 0.1)) }
+                    else { let o = min(d.length, max(t, d.inPoint + 0.1)); d.outPoint = o >= d.length - 0.005 ? nil : o }
+                }
+            })
+            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+            .help(isIn ? "Drag to trim the start of this layer" : "Drag to trim the end of this layer")
+    }
+
+    /// Dimmed trimmed-off parts, cut parts, the selection and the playhead, across every track.
+    private func overlays(_ w: CGFloat) -> some View {
+        let top = ruler + gap
+        let h = height - top
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(Theme.bg.opacity(0.7)).frame(width: max(0, x(take.edit.trimStart, w)), height: h).offset(y: top)
+            Rectangle().fill(Theme.bg.opacity(0.7)).frame(width: max(0, w - x(take.end, w)), height: h).offset(x: x(take.end, w), y: top)
+            ForEach(take.edit.cuts) { c in
+                let cw = max(3, x(c.end, w) - x(c.start, w))
+                ZStack {
+                    Rectangle().fill(Theme.bg.opacity(0.55))
+                    Rectangle().fill(recordRed.opacity(0.16))
+                    HStack {
+                        Rectangle().fill(recordRed.opacity(0.8)).frame(width: 1.5)
+                        Spacer(minLength: 0)
+                        Rectangle().fill(recordRed.opacity(0.8)).frame(width: 1.5)
+                    }
+                    Image(systemName: "scissors").font(.system(size: 11, weight: .bold)).foregroundStyle(recordRed.opacity(0.9))
+                        .opacity(cw > 18 ? 1 : 0).offset(y: h / 2 - 14)
+                }
+                .frame(width: cw, height: h).offset(x: x(c.start, w), y: top)
+            }
+            if let s = selection {
+                let sw = max(2, x(s.upperBound, w) - x(s.lowerBound, w))
+                ZStack {
+                    Rectangle().fill(Theme.accent.opacity(0.16))
+                    HStack {
+                        Rectangle().fill(Theme.accent).frame(width: 2)
+                        Spacer(minLength: 0)
+                        Rectangle().fill(Theme.accent).frame(width: 2)
+                    }
+                }
+                .frame(width: sw, height: h + gap).offset(x: x(s.lowerBound, w), y: top - gap)
+            }
+            Rectangle().fill(Theme.text).frame(width: 2, height: height).offset(x: x(playback.position, w) - 1)
+            Image(systemName: "arrowtriangle.down.fill").font(.system(size: 9)).foregroundStyle(Theme.text)
+                .offset(x: x(playback.position, w) - 5, y: ruler - 10)
         }
-        .frame(width: w, height: layerHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

@@ -96,7 +96,7 @@ Search for any song and Don't Fret listens to its preview to work out the tempo,
 <td colspan="2" valign="top">
 
 ### 🎬 Studio
-Record yourself playing, as audio only or as video with sound (any camera, including an iPhone through Continuity Camera). You can play along to a click or one of your songs. Then **trim** it, **stack layers** on top (a second guitar, vocals, a solo), pick a sound preset (Warm, Live Room, Concert Hall, Radio Ready, Lo-Fi…) or adjust bass, treble, reverb, levelling and fades while you listen. **Export** a finished `.m4a`, `.wav` or `.mp4` that's ready to share.
+Record yourself playing, as audio only or as video with sound (any camera, including an iPhone through Continuity Camera). You can play along to a click or one of your songs. Then **trim** it, select any part to **cut it out**, keep only it or loop it, and **stack layers** on top (a second guitar, vocals, a solo) that you can mute, solo, pan, nudge, auto-align or re-record over just the bit you missed. Pick a sound preset (Warm, Live Room, Concert Hall, Radio Ready, Lo-Fi…) or adjust bass, treble, reverb, levelling and fades while you listen. **Export** a finished `.m4a`, `.wav` or `.mp4` that's ready to share.
 
 </td>
 </tr>
