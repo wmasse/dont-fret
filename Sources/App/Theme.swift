@@ -435,6 +435,25 @@ struct ArtworkView: View {
     }
 }
 
+/// A soft glow made from a song's cover — used behind headers, like modern music players.
+struct AmbientArt: View {
+    var seed: String
+    var title: String
+    var genre: String
+    var opacity: Double = 0.4
+    var body: some View {
+        GeometryReader { g in
+            ArtworkView(seed: seed, title: title, genre: genre, size: max(g.size.width, g.size.height), radius: 0)
+                .frame(width: g.size.width, height: g.size.height)
+                .blur(radius: 70)
+                .saturation(1.3)
+                .opacity(opacity)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 enum Genre {
     static let all = ["Rock", "Pop", "Folk", "Country", "Blues", "Reggae", "Indie", "Grunge", "Soul", "Traditional", "Exercise", "Custom"]
     static func icon(_ g: String) -> String {

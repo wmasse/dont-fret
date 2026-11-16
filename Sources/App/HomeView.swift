@@ -119,8 +119,8 @@ struct HomeView: View {
         .background(
             ZStack {
                 RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.surface)
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(LinearGradient(colors: [Theme.accent.opacity(0.16), .clear], startPoint: .topLeading, endPoint: .center))
+                AmbientArt(seed: song.id, title: song.title, genre: song.genre, opacity: 0.32)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
         )
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.stroke))

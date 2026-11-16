@@ -237,6 +237,7 @@ struct SongDetailView: View {
     private func header(_ s: Song) -> some View {
         HStack(alignment: .bottom, spacing: 28) {
             ArtworkView(seed: s.id, title: s.title, genre: s.genre, size: 200)
+                .background(AmbientArt(seed: s.id, title: s.title, genre: s.genre, opacity: 0.4).frame(width: 520, height: 360).offset(x: 120))
                 .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 10) {
