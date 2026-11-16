@@ -61,15 +61,18 @@ struct ChartMatch {
     var extended = false
     /// The chart only fits after moving it to a key it wasn't written in (not its capo or a tuning).
     var unexpectedKey = false
+    /// The chart fits best a half-step above how it's written.
+    var nearKey = false
     /// Best fit at each key shift (for diagnostics).
     var shiftFits: [Double] = []
 
     /// Share of the best possible fit that the chart reaches on the preview.
     var ratio: Double { audioFit > 0 ? fit / audioFit : 0 }
     var quality: Quality {
-        if unexpectedKey { return ratio >= 0.95 && fit - otherKeyFit >= 0.06 ? .medium : .poor }
-        if ratio >= 0.86 && fit - otherKeyFit > 0.02 { return .high }
-        if ratio >= 0.74 { return .medium }
+        if unexpectedKey { return .poor }
+        if nearKey { return ratio >= 0.95 && fit - otherKeyFit >= 0.03 ? .medium : .poor }
+        if ratio >= 0.86 && fit - otherKeyFit > 0.04 { return .high }
+        if ratio >= 0.80 && fit - otherKeyFit > 0.02 { return .medium }
         return .poor
     }
     enum Quality: String { case high = "High", medium = "Medium", poor = "Poor" }
@@ -427,7 +430,8 @@ enum ChordCharts {
         // guitars). Common progressions fit almost anything once moved to an arbitrary key, so a chart
         // that only fits after such a move is not trusted.
         let expected = Set([0, chart.capo % 12, 11, (chart.capo + 11) % 12])
-        guard var b = perShift.compactMap({ $0 }).max(by: { $0.fit < $1.fit }) else { return nil }
+        guard let top = (0..<12).filter({ perShift[$0] != nil }).max(by: { bestPerShift[$0] < bestPerShift[$1] }),
+              var b = perShift[top] else { return nil }
         if !expected.contains(b.shift),
            let alt = expected.compactMap({ perShift[$0] }).max(by: { bestPerShift[$0.shift] < bestPerShift[$1.shift] }),
            bestPerShift[alt.shift] >= bestPerShift[b.shift] - 0.03 {
@@ -435,7 +439,9 @@ enum ChordCharts {
         }
         b.fit = bestPerShift[b.shift]
         let other = bestPerShift.enumerated().filter { $0.offset != b.shift }.map(\.element).max() ?? 0
-        let unexpectedKey = !expected.contains(b.shift)
+        // a half-step up is also plausible (chart written a semitone low), but needs a very clear fit
+        let nearKey = [1, (chart.capo + 1) % 12].contains(b.shift) && !expected.contains(b.shift)
+        let unexpectedKey = !expected.contains(b.shift) && !nearKey
 
         // build the song in the recording's key
         var arr = arrange(chart, meter: meter, lineBars: b.lineBars, chordsPerBar: b.cpb)
@@ -469,7 +475,10 @@ enum ChordCharts {
         for part in arr.parts {
             let tokens = part.chords.map { c -> String in
                 let n = sounding(c.name)
-                return c.beats == meter ? n : n + ":" + String(c.beats)
+                if c.beats == meter { return n }
+                // whole bars read better written out bar by bar
+                if c.beats % meter == 0 { return Array(repeating: n, count: c.beats / meter).joined(separator: " ") }
+                return n + ":" + String(c.beats)
             }.joined(separator: " ")
             if var last = sections.last, last.chords == tokens, sectionType(last.name) == sectionType(part.name) {
                 last.repeats += 1
@@ -504,13 +513,17 @@ enum ChordCharts {
         var chroma = [Float](repeating: 0, count: 12)
         for (k, tb) in tr.beatTreble.enumerated() where valid[k] { for j in 0..<12 { chroma[j] += tb[j] } }
         var key = Transcriber.refineKey(path: path, chroma: chroma)
-        if Set(path).contains(tr.minorKey ? 12 + tr.keyRoot : tr.keyRoot) { key = (tr.keyRoot, tr.minorKey) }
+        // the recording's own key wins when its home chord is one of the chart's two main chords
+        var weight: [Int: Int] = [:]
+        for c in path { weight[c, default: 0] += 1 }
+        let main = weight.sorted { $0.value > $1.value }.prefix(2).map(\.key)
+        if main.contains(tr.minorKey ? 12 + tr.keyRoot : tr.keyRoot) { key = (tr.keyRoot, tr.minorKey) }
 
         return ChartMatch(chart: chart, shift: b.shift, lineBars: b.lineBars, chordsPerBar: b.cpb, offset: b.offset,
                           fit: Double(b.fit), audioFit: Double(audioFit), otherKeyFit: Double(other),
                           sections: sections, previewBars: bars, seconds: Double(arr.beats.count) * 60 / bpm,
                           trackSeconds: trackSeconds, keyRoot: key.0, minorKey: key.1, extended: extended,
-                          unexpectedKey: unexpectedKey, shiftFits: bestPerShift.map(Double.init))
+                          unexpectedKey: unexpectedKey, nearKey: nearKey, shiftFits: bestPerShift.map(Double.init))
     }
 
     /// Flat spellings when the sounding key is a flat key (F, Bb, Eb, Ab, Db).

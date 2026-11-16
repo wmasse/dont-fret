@@ -51,6 +51,7 @@ extension SelfTest {
         var n = 0, audioKey = 0, chartKey = 0, chartFound = 0, audioRecall = 0.0, chartRecall = 0.0, audioPrec = 0.0, chartPrec = 0.0
         var lengthErr: [Double] = []
         var usedChart = 0, chartWrongKeyUsed = 0
+        var finalKey = 0, finalRecall = 0.0, finalPrec = 0.0
         for b in benchSongs {
             let slug = ChordCharts.normTitle(b.title).replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: "'", with: "")
             let trackFile = dir.appendingPathComponent(slug + ".track.json")
@@ -105,6 +106,15 @@ extension SelfTest {
                 audioRecall += a.recall; audioPrec += a.precision
                 line += String(format: "  (found %.0f%% of the real chords, %.0f%% of the time on a right chord)", a.recall * 100, a.precision * 100)
             }
+            // what the user actually gets: the chart when it's trusted, otherwise the preview's chords
+            if !b.core.isEmpty {
+                if let m, m.quality != .poor {
+                    let c = grade(m.sections, meter: tr.beatsPerBar)
+                    finalRecall += c.recall; finalPrec += c.precision; if keyOK(m.keyRoot, m.minorKey) { finalKey += 1 }
+                } else {
+                    finalRecall += a.recall; finalPrec += a.precision; if keyOK(tr.keyRoot, tr.minorKey) { finalKey += 1 }
+                }
+            }
             if let m {
                 let c = grade(m.sections, meter: tr.beatsPerBar)
                 let parts = m.sections.map { "\($0.name)×\($0.repeats)" }.joined(separator: ", ")
@@ -142,6 +152,7 @@ extension SelfTest {
         print("   preview only : key right \(audioKey)/\(n), real chords found \(pct(audioRecall / Double(max(1, n)))), time on a right chord \(pct(audioPrec / Double(max(1, n))))")
         print("   chart found  : \(chartFound)/\(n); used (fit not poor) \(usedChart), of which wrong \(chartWrongKeyUsed)")
         print("   chart+audio  : key right \(chartKey)/\(chartFound), real chords found \(pct(chartRecall / Double(max(1, chartFound)))), time on a right chord \(pct(chartPrec / Double(max(1, chartFound))))")
+        print("   what you get : key right \(finalKey)/\(n), real chords found \(pct(finalRecall / Double(max(1, n)))), time on a right chord \(pct(finalPrec / Double(max(1, n)))), whole song for \(usedChart)/\(n)")
         if !lengthErr.isEmpty { print("   song length  : median error \(pct(lengthErr.sorted()[lengthErr.count / 2])) vs the real track") }
         print("   wrong chart  : accepted \(wrongUsed)/\(wrongTotal) — " + wrongLines.joined(separator: "; "))
         for r in rows { print("   " + r) }

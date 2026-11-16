@@ -365,7 +365,7 @@ struct AddSongView: View {
                     progressRow("Finding the beat", done: step >= 2, active: step == 1)
                     progressRow("Listening for the chords", done: step >= 3, active: step == 2)
                     progressRow("Looking up a chord chart for the whole song", done: step >= 5, active: step == 4)
-                    progressRow("Choosing the easiest way to play it", done: step >= 5, active: step == 4)
+                    progressRow("Choosing the easiest way to play it", done: step >= 5, active: false)
                 }
                 .frame(width: 330)
             }
