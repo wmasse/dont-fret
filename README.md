@@ -53,7 +53,7 @@ Don't Fret listens to your guitar through the microphone and tells you when you'
 <td width="50%" valign="top">
 
 ### 🔎 Add any song
-Search for any song and Don't Fret listens to its preview to work out the tempo, key, chords, capo and strumming pattern for you. No account or key needed. You can also paste a chord chart or build a song chord by chord.
+Search for any song and Don't Fret finds a chord chart for the **whole song** (verses, choruses, bridge), then listens to the recording to confirm the key, tempo, capo and strumming pattern. No chart? It works the chords out from the song's preview and tells you so. No account or key needed. You can also paste a chord chart or build a song chord by chord.
 
 </td>
 <td width="50%" valign="top">
@@ -129,7 +129,7 @@ Listen along with the chords lighting up, fix anything in the visual editor, or 
 
 ## Privacy
 
-Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. Studio recordings are saved in the `Studio` folder there and never leave your Mac unless you export them. The internet is only used when you search for a song to add.
+Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. Studio recordings are saved in the `Studio` folder there and never leave your Mac unless you export them. The app only goes online to fetch album covers for the built-in songs from Apple's public music catalog, and when you search for a song to add (Apple's catalog for the preview, Songsterr for a chord chart). No personal information is sent.
 
 ## Build it yourself
 
