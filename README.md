@@ -92,6 +92,14 @@ Search for any song and Don't Fret listens to its preview to work out the tempo,
 
 </td>
 </tr>
+<tr>
+<td colspan="2" valign="top">
+
+### 🎬 Studio
+Record yourself playing, as audio only or as video with sound (any camera, including an iPhone through Continuity Camera). You can play along to a click or one of your songs. Then **trim** it, **stack layers** on top (a second guitar, vocals, a solo), pick a sound preset (Warm, Live Room, Concert Hall, Radio Ready, Lo-Fi…) or adjust bass, treble, reverb, levelling and fades while you listen. **Export** a finished `.m4a`, `.wav` or `.mp4` that's ready to share.
+
+</td>
+</tr>
 </table>
 
 <div align="center">
@@ -106,7 +114,7 @@ Search for any song and Don't Fret listens to its preview to work out the tempo,
 3. **The first time you open it**, macOS warns that it can't check the app, because it isn't from the App Store. To open it anyway:
    - **macOS 15 Sequoia and later:** open the app once, click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
    - **macOS 14 Sonoma:** Control-click (or right-click) the app in Applications, choose **Open**, then click **Open**.
-4. Allow **microphone** access so it can hear your guitar.
+4. Allow **microphone** access so it can hear your guitar (and **camera** access if you record video in the Studio).
 
 **Needs:** macOS 14 Sonoma or later and any guitar (acoustic or electric through an amp or audio interface). The built-in Mac microphone works fine.
 
@@ -121,7 +129,7 @@ Listen along with the chords lighting up, fix anything in the visual editor, or 
 
 ## Privacy
 
-Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. The internet is only used when you search for a song to add.
+Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. Studio recordings are saved in the `Studio` folder there and never leave your Mac unless you export them. The internet is only used when you search for a song to add.
 
 ## Build it yourself
 

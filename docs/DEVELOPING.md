@@ -26,6 +26,8 @@ scripts/release.sh 1.1
 | Mic chord & note detection, muted-string hints, YIN tuner, strum onsets & direction, input devices | `Sources/App/Audio.swift` |
 | Guitar sound: physical string model, acoustic body, electric clean/drive amp, bends/slides/hammer-ons/vibrato | `Sources/App/Synth.swift` |
 | Riffs & Solos: 18 riffs, solos, melodies and exercises with TAB, techniques, playback and mic practice | `Sources/App/Riffs.swift` |
+| Studio: takes store, audio/video recorder, live mixer with effects, offline mixdown, video export | `Sources/App/StudioEngine.swift` |
+| Studio pages: record panel, takes, editor with trim/layers/sound/export | `Sources/App/StudioView.swift` |
 | Play Along / Wait Mode / Auto-Scroll sheet, section loops with auto speed-up | `Sources/App/Game.swift` |
 | Chord Trainer (spaced review), 1-Minute Changes, Strum Trainer | `Sources/App/Practice.swift` |
 | Song library, song page (key & capo, tricky changes, history), song editor | `Sources/App/SongsView.swift` |
@@ -66,6 +68,13 @@ E0+A2:1 E0m E0m E3 | G7h G5p B8b:1 e12~:2 r:1 D7/
 ```
 
 A token is the string (`E A D G B e`), the fret, an optional technique (`h` hammer-on, `p` pull-off, `/` slide in, `b` bend a whole step, `~` vibrato, `m` palm mute), then an optional `:beats` and `*repeat`. `+` plays notes together, `r` is a rest, `|` is only there to make it readable. **Practice with Mic** turns the riff into a song whose notes carry their TAB position (`~G4@B8`).
+
+## Studio
+
+- **Storage:** takes live in `~/Library/Application Support/DontFret/Studio/`. `takes.json` holds every `Take`: its recording, an audio file the mixer can read (for video, the sound is extracted to `<id>-sound.m4a`), its `TakeEdit` and its overdub layers. `StudioStore(folder:)` can point anywhere, which tests use.
+- **Recording:** `StudioRecorder` uses `AVCaptureSession` with `AVCaptureAudioFileOutput` (AAC `.m4a`) or `AVCaptureMovieFileOutput` (`.mov`). The camera needs `NSCameraUsageDescription`, which `build.sh` writes.
+- **Mixing:** `StudioGraph` routes the take and its layers through a mixer, then a 2-band EQ, an Apple dynamics processor ("even out the volume") and reverb. `StudioPlayback` runs it live and keeps a video `AVPlayer` in sync with `setRate(_:time:atHostTime:)`. `StudioRenderer.render` runs the same graph offline, then applies fades and levels the peak to −1 dB. `exportVideo` combines the trimmed picture (with opacity fades) and the mixed sound into an `.mp4`.
+- **Layer alignment:** a layer's `start` is the take time of its first sample, worked out from the gap between the recorder starting and playback starting. Users can drag a layer to fine-tune it.
 
 ## Detection self-test
 
