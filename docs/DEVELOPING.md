@@ -88,7 +88,8 @@ swiftc -D SELFTEST -parse-as-library -swift-version 5 -O Sources/App/*.swift Tes
 
 The test synthesizes every chord shape and single note and runs them through the recognizer. Current results:
 - 97% of beginner chords and 87% of all chords are named correctly from scratch.
-- In-game verification accepts 100% of correctly played chords; a wrong chord is accepted 3% of the time.
+- In-game verification (Normal) accepts about 98% of correctly played chords, and every common open chord. A wrong chord is accepted about 1% of the time, room noise or random notes about 1%, just two strings of the chord about 10%, and a chord with one string on the wrong fret about 40% (often that still sounds like the chord).
+- To pass, the sound has to match the chord's template, no other chord can fit better, every tone except the fifth has to be heard, and little sound can sit on notes outside the chord. It also has to hold for 2, 3 or 4 frames (Relaxed, Normal or Strict). The thresholds live on `Strictness` in `Store.swift`, and `Tests/StrictnessTest.swift` reports all three levels.
 - Single notes (riffs): 100% accepted with pitch tracking, 0% wrong notes accepted.
 - Muted-string hints catch 100% of detectable muted strings with no false alarms.
 - Generated voicings, transposing, ChordPro round trip and catalog chords are all checked.

@@ -77,19 +77,46 @@ enum ChordTemplates {
     }
 
     /// Does the frame sound like `target`? Returns the match score and pass/fail.
+    ///
+    /// Passing takes four things, so a near-miss, a half-strummed chord or room noise doesn't count:
+    /// the sound is close to the chord's template, no other chord fits better, every tone that
+    /// defines the chord (all but the fifth) can be heard, and little energy sits on notes the
+    /// chord doesn't contain.
     static func evaluate(_ target: ChordSymbol, frame: AnalysisFrame, strictness: Strictness) -> (score: Float, ok: Bool) {
         guard frame.hasSound else { return (0, false) }
         let c = normalized(frame.chroma)
         let tv = vector(root: target.root, quality: target.quality)
         var ts = cosine(c, tv)
         if let b = frame.bass, b == target.root || b == target.bass { ts += 0.03 }
+        guard ts >= strictness.threshold else { return (ts, false) }
+
+        let tones = Set(target.quality.intervals.map { (target.root + $0) % 12 })
+        // the defining tones must ring: the fifth is optional (it's often weak or left out)
+        let mx = max(frame.chroma.max() ?? 0, 1e-6)
+        let defining = target.quality.intervals.filter { $0 != 7 || target.quality == .power }
+        for iv in defining where frame.chroma[(target.root + iv) % 12] / mx < strictness.minTone { return (ts, false) }
+        // energy on notes outside the chord (allowing each tone's fifth, its loudest overtone)
+        var allowed = tones.union(tones.map { ($0 + 7) % 12 })
+        // a bare power chord has no third, so the root's own 5th harmonic (a major third) is loud
+        if target.quality == .power { allowed.insert((target.root + 4) % 12) }
+        let total = frame.chroma.reduce(0, +)
+        var foreign: Float = 0
+        for pc in 0..<12 where !allowed.contains(pc) { foreign += frame.chroma[pc] }
+        if total > 0, foreign / total > strictness.maxForeign { return (ts, false) }
+
+        // no other chord may fit better, including the plain chord inside the target (G for Gmaj7:
+        // overtones can fake a 7th) and a richer one around it (Gmaj7 ringing when G is asked for).
+        // A same-root sibling that differs only in a colour tone (Gadd9 next to Gmaj7) gets a little
+        // more room, since the tone check already heard the target's own colour tone.
         var best: Float = 0
         for e in all where e.symbol.key != target.key {
-            var s = cosine(c, e.vector) - e.symbol.quality.detectionPenalty
+            let pcs = Set(e.symbol.pitchClasses)
+            var s = cosine(c, e.vector) - max(0, e.symbol.quality.detectionPenalty - target.quality.detectionPenalty)
             if let b = frame.bass, b == e.symbol.root { s += 0.03 }
+            if e.symbol.root == target.root && !pcs.isSubset(of: tones) && !tones.isSubset(of: pcs) { s -= 0.03 }
             best = max(best, s)
         }
-        return (ts, ts >= strictness.threshold && ts >= best - strictness.margin)
+        return (ts, ts >= best - strictness.margin)
     }
 }
 
@@ -591,9 +618,11 @@ final class AudioEngine: ObservableObject {
         level = level * 0.5 + lvl * 0.5
         chroma = frame.chroma
         candidates = ranked
-        if let top = ranked.first, top.score > 0.68 {
+        // the "Hearing …" label: a clear winner (not a near-tie with a different chord), held ~130 ms
+        let runnerUp = ranked.dropFirst().first { Set($0.symbol.pitchClasses) != Set(ranked[0].symbol.pitchClasses) }
+        if let top = ranked.first, top.score > 0.74, top.score - (runnerUp?.score ?? 0) >= 0.02 {
             if pendingTop == top.id { pendingCount += 1 } else { pendingTop = top.id; pendingCount = 1 }
-            if pendingCount >= 2 { detected = top }
+            if pendingCount >= 3 { detected = top }
         } else if !frame.hasSound {
             detected = nil
             pendingTop = nil

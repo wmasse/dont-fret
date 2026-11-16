@@ -85,6 +85,7 @@ struct SelfTest {
         transcribeChecks()
         synthChecks()
         riffChecks()
+        strictnessChecks()
     }
 
     static func frame(_ midis: [Int], noise: Float = 0.004, pitch: Bool = false) -> AnalysisFrame {
