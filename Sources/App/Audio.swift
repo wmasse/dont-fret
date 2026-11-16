@@ -1,0 +1,651 @@
+import AVFoundation
+import Accelerate
+import Combine
+import CoreAudio
+import QuartzCore
+
+struct ChordMatch: Identifiable, Equatable {
+    let symbol: ChordSymbol
+    let score: Float
+    var id: String { symbol.key }
+    var name: String { symbol.displayName }
+}
+
+struct AnalysisFrame {
+    var chroma: [Float]
+    var bass: Int?
+    var rms: Float
+    var time: Double
+    var hasSound: Bool
+    /// Strength of each MIDI note (index = midi number), 0...1.
+    var noteEnergy: [Float] = []
+    var f0: Double? = nil
+
+    func energy(_ midi: Int) -> Float { midi >= 0 && midi < noteEnergy.count ? noteEnergy[midi] : 0 }
+}
+
+struct Onset {
+    var time: Double
+    /// Detected strum direction, when the sound gives a clear answer.
+    var direction: StrumStroke?
+}
+
+/// Chord templates with harmonic weighting so overtones of a real guitar match well.
+enum ChordTemplates {
+    struct Entry { let symbol: ChordSymbol; let vector: [Float] }
+
+    static let all: [Entry] = {
+        var out: [Entry] = []
+        for q in ChordQuality.allCases {
+            for root in 0..<12 {
+                let flat = [1, 3, 8, 10].contains(root)
+                out.append(Entry(symbol: ChordSymbol(root: root, quality: q, bass: nil, flat: flat), vector: vector(root: root, quality: q)))
+            }
+        }
+        return out
+    }()
+
+    static func vector(root: Int, quality: ChordQuality) -> [Float] {
+        var v = [Float](repeating: 0, count: 12)
+        let harmonics: [(Int, Float)] = [(0, 1.0), (0, 0.5), (7, 0.33), (0, 0.25), (4, 0.2)]
+        for (i, iv) in quality.intervals.enumerated() {
+            let pc = (root + iv) % 12
+            let toneWeight: Float = i == 0 ? 1.15 : (iv == 2 || iv == 9 ? 0.85 : 1.0)
+            for (off, w) in harmonics { v[(pc + off) % 12] += w * toneWeight }
+        }
+        return normalized(v)
+    }
+
+    static func normalized(_ v: [Float]) -> [Float] {
+        let n = sqrt(v.reduce(0) { $0 + $1 * $1 })
+        return n > 0 ? v.map { $0 / n } : v
+    }
+
+    static func cosine(_ a: [Float], _ b: [Float]) -> Float {
+        var s: Float = 0
+        for i in 0..<12 { s += a[i] * b[i] }
+        return s
+    }
+
+    static func rank(_ frame: AnalysisFrame) -> [ChordMatch] {
+        let c = normalized(frame.chroma)
+        return all.map { e in
+            var s = cosine(c, e.vector) - e.symbol.quality.detectionPenalty
+            if let b = frame.bass, b == e.symbol.root { s += 0.03 }
+            return ChordMatch(symbol: e.symbol, score: s)
+        }.sorted { $0.score > $1.score }
+    }
+
+    /// Does the frame sound like `target`? Returns the match score and pass/fail.
+    static func evaluate(_ target: ChordSymbol, frame: AnalysisFrame, strictness: Strictness) -> (score: Float, ok: Bool) {
+        guard frame.hasSound else { return (0, false) }
+        let c = normalized(frame.chroma)
+        let tv = vector(root: target.root, quality: target.quality)
+        var ts = cosine(c, tv)
+        if let b = frame.bass, b == target.root || b == target.bass { ts += 0.03 }
+        var best: Float = 0
+        for e in all where e.symbol.key != target.key {
+            var s = cosine(c, e.vector) - e.symbol.quality.detectionPenalty
+            if let b = frame.bass, b == e.symbol.root { s += 0.03 }
+            best = max(best, s)
+        }
+        return (ts, ts >= strictness.threshold && ts >= best - strictness.margin)
+    }
+}
+
+/// Single-note matching for riffs and melodies.
+enum NoteMatcher {
+    static func evaluate(_ midi: Int, frame: AnalysisFrame) -> Bool {
+        guard frame.hasSound else { return false }
+        if let f = frame.f0 {
+            let m = Theory.midi(frequency: f)
+            for oct in [-12.0, 0, 12] where abs(m - Double(midi) - oct) < 0.5 { return true }
+        }
+        // fallback: the target (or its octave, which is often louder on guitar) leads the spectrum
+        let top = frame.noteEnergy.max() ?? 0
+        guard top > 0 else { return false }
+        let e = frame.energy(midi) / top, oct = frame.energy(midi + 12) / top
+        guard e >= 0.2 else { return false }
+        // a stronger note that is not one of this note's own overtones means something else was played
+        let overtones: Set<Int> = [midi, midi + 12, midi + 19, midi + 24, midi + 28, midi + 31, midi + 36]
+        let rival = frame.noteEnergy.indices.filter { !overtones.contains($0) && frame.noteEnergy[$0] / top > max(e, oct) * 0.9 }
+        guard rival.isEmpty else { return false }
+        return e >= 0.6 || (e >= 0.3 && oct >= 0.5) || oct >= 0.8
+    }
+}
+
+/// Finds strings that should be ringing for a chord shape but aren't.
+enum StringCheck {
+    /// Strings whose note can be heard on its own — not hidden under another string's overtones.
+    static func checkable(_ shape: ChordShape) -> [Int] {
+        let ringing = (0..<6).filter { shape.frets[$0] >= 0 }
+        let notes = ringing.map { Theory.openStrings[$0] + shape.frets[$0] }
+        return ringing.filter { s in
+            let m = Theory.openStrings[s] + shape.frets[s]
+            let others = notes.enumerated().filter { ringing[$0.offset] != s }.map(\.element)
+            return !others.contains { o in [0, 12, 19, 24, 28, 31].contains(m - o) }
+        }
+    }
+
+    static func quietStrings(_ shape: ChordShape, frame: AnalysisFrame) -> [Int] {
+        guard frame.hasSound, !frame.noteEnergy.isEmpty else { return [] }
+        return checkable(shape).filter { s in frame.energy(Theory.openStrings[s] + shape.frets[s]) < 0.02 }
+    }
+
+    static func hint(_ shape: ChordShape, quiet: [Int]) -> String? {
+        guard let s = quiet.first else { return nil }
+        let str = Theory.stringLabels[s]
+        if shape.frets[s] == 0 { return "The open \(str) string isn't ringing — make sure no finger is touching it." }
+        let finger = shape.fingers[s] > 0 ? "finger \(shape.fingers[s])" : "your finger"
+        return "The \(str) string isn't ringing — press \(finger) firmly just behind fret \(shape.frets[s])."
+    }
+}
+
+// MARK: - Devices
+
+struct InputDevice: Identifiable, Hashable {
+    var id: String
+    var name: String
+    var deviceID: AudioDeviceID
+}
+
+enum OutputKind { case speakers, headphones, external }
+
+enum AudioDevices {
+    private static func address(_ sel: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: sel, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    static func allDevices() -> [AudioDeviceID] {
+        var addr = address(kAudioHardwarePropertyDevices)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
+
+    static func inputChannels(_ id: AudioDeviceID) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeInput)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    static func string(_ id: AudioDeviceID, _ sel: AudioObjectPropertySelector) -> String? {
+        var addr = address(sel)
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        var value: Unmanaged<CFString>?
+        let status = withUnsafeMutablePointer(to: &value) { ptr in
+            AudioObjectGetPropertyData(id, &addr, 0, nil, &size, ptr)
+        }
+        guard status == noErr, let v = value else { return nil }
+        return v.takeRetainedValue() as String
+    }
+
+    static func inputDevices() -> [InputDevice] {
+        allDevices().compactMap { id in
+            guard inputChannels(id) > 0, let uid = string(id, kAudioDevicePropertyDeviceUID) else { return nil }
+            return InputDevice(id: uid, name: string(id, kAudioObjectPropertyName) ?? "Input", deviceID: id)
+        }
+    }
+
+    static func deviceID(uid: String) -> AudioDeviceID? { inputDevices().first { $0.id == uid }?.deviceID }
+
+    private static func uint32(_ id: AudioObjectID, _ sel: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope) -> UInt32? {
+        var addr = address(sel, scope)
+        var v: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &v) == noErr ? v : nil
+    }
+
+    /// Is sound coming out of the Mac's own speakers (which the mic can hear)?
+    static func outputKind() -> OutputKind {
+        guard let out = uint32(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal) else { return .speakers }
+        let transport = uint32(out, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal) ?? 0
+        if transport != kAudioDeviceTransportTypeBuiltIn { return .external }
+        if let src = uint32(out, kAudioDevicePropertyDataSource, kAudioDevicePropertyScopeOutput), src == 0x6864_706E /* 'hdpn' */ {
+            return .headphones
+        }
+        return .speakers
+    }
+}
+
+// MARK: - Engine
+
+final class AudioEngine: ObservableObject {
+    static let shared = AudioEngine()
+
+    @Published var permission: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    @Published private(set) var isListening = false
+    @Published private(set) var level: Float = 0
+    @Published private(set) var chroma = [Float](repeating: 0, count: 12)
+    @Published private(set) var detected: ChordMatch?
+    @Published private(set) var candidates: [ChordMatch] = []
+    @Published private(set) var pitch: Double?
+    @Published var errorMessage: String?
+    @Published private(set) var deviceName = "System default"
+
+    let frames = PassthroughSubject<AnalysisFrame, Never>()
+    let onsets = PassthroughSubject<Onset, Never>()
+
+    private let engine = AVAudioEngine()
+    private var users = 0
+    private let n = 8192
+    private let hop = 2048
+    private var ring: [Float]
+    private var ringWrite = 0
+    private var sinceHop = 0
+    private var sampleRate: Double = 48000
+    private var fftSetup: FFTSetup?
+    private var window: [Float]
+    private var smoothChroma = [Float](repeating: 0, count: 12)
+    private var pendingTop: String?
+    private var pendingCount = 0
+    private var pitchHistory: [Double] = []
+    private var configObserver: NSObjectProtocol?
+
+    // calibration & self-sound filtering (shared with the tap thread)
+    private let lock = NSLock()
+    private var gate: Float = 0.006
+    private var clickBleed: Float = 0
+    private var deviceUID: String?
+    private var suppressUntil: Double = 0
+    private var clickTimes: [Double] = []
+    private var rmsHistory: [(Double, Float)] = []
+
+    // onset & direction state (tap thread only)
+    private var envSlow: Float = 0
+    private var prevBlock: Float = 0
+    private var lastOnset: Double = 0
+    private var lowState: Float = 0
+    private var highBase: Float = 0
+    private var bandBlocks: [(low: Float, high: Float)] = []
+    private var blockIndex = 0
+    private var pendingOnsets: [(time: Double, block: Int)] = []
+
+    private init() {
+        ring = [Float](repeating: 0, count: n)
+        window = [Float](repeating: 0, count: n)
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_NORM))
+        fftSetup = vDSP_create_fftsetup(vDSP_Length(13), FFTRadix(kFFTRadix2))
+        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            guard let self, self.users > 0 else { return }
+            self.stopEngine()
+            self.startEngine()
+        }
+    }
+
+    // MARK: configuration
+
+    func configure(gate g: Float?, clickBleed b: Float?, deviceUID uid: String?) {
+        lock.lock()
+        gate = g ?? 0.006
+        clickBleed = b ?? 0
+        let changed = uid != deviceUID
+        deviceUID = uid
+        lock.unlock()
+        if changed && engine.isRunning {
+            DispatchQueue.main.async { self.stopEngine(); self.startEngine() }
+        }
+    }
+
+    /// Ignore the microphone while the app itself is playing a chord through the speakers.
+    func suppressSelfSound(for seconds: Double) {
+        guard AudioDevices.outputKind() == .speakers || AudioDevices.outputKind() == .external else { return }
+        lock.lock(); suppressUntil = max(suppressUntil, CACurrentMediaTime() + seconds); lock.unlock()
+    }
+
+    func noteClick() {
+        lock.lock()
+        clickTimes.append(CACurrentMediaTime())
+        if clickTimes.count > 8 { clickTimes.removeFirst() }
+        lock.unlock()
+    }
+
+    // MARK: calibration
+
+    /// Average loudness of the room (call while the player is silent).
+    func measureNoise(seconds: Double = 2.5, completion: @escaping (Float) -> Void) {
+        let start = CACurrentMediaTime()
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            self.lock.lock()
+            let vals = self.rmsHistory.filter { $0.0 >= start }.map(\.1).sorted()
+            self.lock.unlock()
+            completion(vals.isEmpty ? 0.002 : vals[Int(Double(vals.count - 1) * 0.8)])
+        }
+    }
+
+    /// Plays metronome clicks and measures how loud they are at the microphone.
+    func measureClickBleed(completion: @escaping (Float) -> Void) {
+        var times: [Double] = []
+        for i in 0..<5 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 + Double(i) * 0.5) {
+                times.append(CACurrentMediaTime())
+                GuitarSynth.shared.click(accent: i % 2 == 0)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
+            self.lock.lock()
+            let hist = self.rmsHistory
+            self.lock.unlock()
+            let peaks = times.map { t in hist.filter { $0.0 >= t && $0.0 <= t + 0.15 }.map(\.1).max() ?? 0 }.sorted()
+            completion(peaks.isEmpty ? 0 : peaks[peaks.count / 2])
+        }
+    }
+
+    // MARK: lifecycle (reference counted so screens can share the mic)
+
+    func acquire() {
+        users += 1
+        if users == 1 { requestAndStart() }
+    }
+
+    func release() {
+        users = max(0, users - 1)
+        if users == 0 { stopEngine() }
+    }
+
+    func requestAndStart() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            permission = .authorized
+            startEngine()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    self.permission = granted ? .authorized : .denied
+                    if granted && self.users > 0 { self.startEngine() }
+                }
+            }
+        default:
+            permission = AVCaptureDevice.authorizationStatus(for: .audio)
+        }
+    }
+
+    private func startEngine() {
+        guard !engine.isRunning else { isListening = true; return }
+        let input = engine.inputNode
+        lock.lock(); let uid = deviceUID; lock.unlock()
+        deviceName = "System default"
+        if let uid, let dev = AudioDevices.inputDevices().first(where: { $0.id == uid }), let au = input.audioUnit {
+            var id = dev.deviceID
+            let status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+            if status == noErr { deviceName = dev.name }
+        }
+        let fmt = input.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+            errorMessage = "No microphone input found."
+            return
+        }
+        sampleRate = fmt.sampleRate
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, when in
+            self?.process(buf, when: when)
+        }
+        do {
+            engine.prepare()
+            try engine.start()
+            isListening = true
+            errorMessage = nil
+        } catch {
+            errorMessage = "Couldn't start the microphone: \(error.localizedDescription)"
+            isListening = false
+        }
+    }
+
+    private func stopEngine() {
+        engine.inputNode.removeTap(onBus: 0)
+        if engine.isRunning { engine.stop() }
+        isListening = false
+        level = 0
+        detected = nil
+        candidates = []
+        pitch = nil
+        chroma = [Float](repeating: 0, count: 12)
+        smoothChroma = chroma
+    }
+
+    // MARK: processing (audio tap thread)
+
+    private func process(_ buf: AVAudioPCMBuffer, when: AVAudioTime) {
+        guard let ch = buf.floatChannelData?[0] else { return }
+        let count = Int(buf.frameLength)
+        let startTime = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : CACurrentMediaTime()
+        lock.lock()
+        let g = gate, bleed = clickBleed, quietUntil = suppressUntil, clicks = clickTimes
+        lock.unlock()
+
+        let aLow = Float(1 - exp(-2 * Double.pi * 300 / sampleRate))
+        let aHigh = Float(1 - exp(-2 * Double.pi * 1500 / sampleRate))
+        let block = 256
+        var b = 0
+        var newRms: [(Double, Float)] = []
+        while b < count {
+            let len = min(block, count - b)
+            var eL: Float = 0, eH: Float = 0, sq: Float = 0
+            for i in b..<(b + len) {
+                let x = ch[i]
+                lowState += aLow * (x - lowState)
+                highBase += aHigh * (x - highBase)
+                let h = x - highBase
+                eL += lowState * lowState
+                eH += h * h
+                sq += x * x
+            }
+            let r = sqrt(sq / Float(len))
+            let t = startTime + Double(b) / sampleRate
+            newRms.append((t, r))
+            bandBlocks.append((eL, eH))
+            if bandBlocks.count > 64 { bandBlocks.removeFirst() }
+            blockIndex += 1
+
+            let nearClick = clicks.contains { t >= $0 - 0.01 && t <= $0 + 0.09 }
+            let clickOK = !nearClick || bleed <= 0 || r > bleed * 2.2
+            if r > g * 2, r > prevBlock * 1.5 + 0.002, r > envSlow * 1.7, t - lastOnset > 0.085, t > quietUntil, clickOK {
+                lastOnset = t
+                pendingOnsets.append((t, blockIndex - 1))
+            }
+            envSlow = envSlow * 0.93 + r * 0.07
+            prevBlock = r
+            b += block
+        }
+        resolveOnsets()
+
+        lock.lock()
+        rmsHistory.append(contentsOf: newRms)
+        let cutoff = CACurrentMediaTime() - 4
+        if let firstKeep = rmsHistory.firstIndex(where: { $0.0 >= cutoff }), firstKeep > 0 { rmsHistory.removeFirst(firstKeep) }
+        lock.unlock()
+
+        for i in 0..<count {
+            ring[ringWrite] = ch[i]
+            ringWrite = (ringWrite + 1) % n
+        }
+        sinceHop += count
+        if sinceHop >= hop {
+            sinceHop = 0
+            analyze(time: startTime, gate: g, suppressed: CACurrentMediaTime() < quietUntil)
+        }
+    }
+
+    /// Strum direction: a down-strum hits the low strings first, an up-strum the high strings.
+    /// Compare the low/high balance in the first ~10 ms of the attack with the following ~20 ms.
+    private func resolveOnsets() {
+        while let p = pendingOnsets.first, blockIndex - p.block >= 7 {
+            pendingOnsets.removeFirst()
+            let back = blockIndex - p.block
+            guard back <= bandBlocks.count else { continue }
+            let base = bandBlocks.count - back
+            func ratio(_ r: Range<Int>) -> Float {
+                var l: Float = 1e-9, h: Float = 1e-9
+                for i in r where i >= 0 && i < bandBlocks.count { l += bandBlocks[i].low; h += bandBlocks[i].high }
+                return l / h
+            }
+            let early = ratio(base..<(base + 2)), late = ratio((base + 2)..<(base + 6))
+            let d = log(early / late)
+            let dir: StrumStroke? = d > 0.3 ? .down : (d < -0.3 ? .up : nil)
+            let onset = Onset(time: p.time, direction: dir)
+            DispatchQueue.main.async { self.onsets.send(onset) }
+        }
+    }
+
+    private func analyze(time: Double, gate g: Float, suppressed: Bool) {
+        guard let setup = fftSetup else { return }
+        var samples = [Float](repeating: 0, count: n)
+        let tail = n - ringWrite
+        for i in 0..<tail { samples[i] = ring[ringWrite + i] }
+        for i in 0..<ringWrite { samples[tail + i] = ring[i] }
+
+        var ms: Float = 0
+        samples.withUnsafeBufferPointer { p in vDSP_measqv(p.baseAddress! + (n - hop), 1, &ms, vDSP_Length(hop)) }
+        let rms = sqrt(ms)
+        let hasSound = rms > g && !suppressed
+
+        let f0 = hasSound ? Self.yin(samples, sampleRate: sampleRate, n: n) : nil
+
+        var windowed = [Float](repeating: 0, count: n)
+        vDSP_vmul(samples, 1, window, 1, &windowed, 1, vDSP_Length(n))
+        let half = n / 2
+        var real = [Float](repeating: 0, count: half)
+        var imag = [Float](repeating: 0, count: half)
+        var mags = [Float](repeating: 0, count: half)
+        real.withUnsafeMutableBufferPointer { rp in
+            imag.withUnsafeMutableBufferPointer { ip in
+                var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                windowed.withUnsafeBufferPointer { wp in
+                    wp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { cp in
+                        vDSP_ctoz(cp, 2, &split, 1, vDSP_Length(half))
+                    }
+                }
+                vDSP_fft_zrip(setup, &split, 1, vDSP_Length(13), FFTDirection(FFT_FORWARD))
+                vDSP_zvabs(&split, 1, &mags, 1, vDSP_Length(half))
+            }
+        }
+
+        let spec = hasSound ? Self.analyzeSpectrum(mags, sampleRate: sampleRate, n: n)
+                            : ([Float](repeating: 0, count: 12), nil, [Float](repeating: 0, count: 128))
+        for i in 0..<12 {
+            smoothChroma[i] = hasSound ? smoothChroma[i] * 0.5 + spec.0[i] * 0.5 : smoothChroma[i] * 0.7
+        }
+        let frame = AnalysisFrame(chroma: smoothChroma, bass: spec.1, rms: rms, time: time, hasSound: hasSound, noteEnergy: spec.2, f0: f0)
+        let ranked = hasSound ? Array(ChordTemplates.rank(frame).prefix(4)) : []
+
+        DispatchQueue.main.async {
+            self.publish(frame: frame, ranked: ranked, f0: f0)
+        }
+    }
+
+    /// Backwards-compatible wrapper used by the self-test.
+    static func chroma(fromSpectrum mags: [Float], sampleRate: Double, n: Int) -> ([Float], Int?) {
+        let r = analyzeSpectrum(mags, sampleRate: sampleRate, n: n)
+        return (r.0, r.1)
+    }
+
+    /// Peak-picked chromagram, lowest strong note, and per-MIDI-note energy.
+    static func analyzeSpectrum(_ mags: [Float], sampleRate: Double, n: Int) -> ([Float], Int?, [Float]) {
+        let half = n / 2
+        let binHz = Float(sampleRate) / Float(n)
+        let kMin = max(2, Int(75 / binHz))
+        let kMax = min(half - 2, Int(2100 / binHz))
+        var maxMag: Float = 0
+        for k in kMin...kMax { maxMag = max(maxMag, mags[k]) }
+
+        var raw = [Float](repeating: 0, count: 12)
+        var notes = [Float](repeating: 0, count: 128)
+        var bass: Int? = nil
+        if maxMag > 0 {
+            let thresh = maxMag * 0.02
+            for k in kMin...kMax {
+                let m = mags[k]
+                guard m > thresh, m > mags[k - 1], m >= mags[k + 1] else { continue }
+                let a = mags[k - 1], g = mags[k + 1]
+                let denom = a - 2 * m + g
+                let p: Float = denom != 0 ? 0.5 * (a - g) / denom : 0
+                let f = (Float(k) + p) * binHz
+                let midi = 69 + 12 * log2(f / 440)
+                let rounded = midi.rounded()
+                let dev = abs(midi - rounded)
+                let closeness = max(0, 1 - dev * 1.6)
+                let mi = Int(rounded)
+                if mi >= 0 && mi < 128 { notes[mi] = max(notes[mi], (m / maxMag) * closeness) }
+                guard m > maxMag * 0.05 else { continue }
+                let pc = ((mi % 12) + 12) % 12
+                // fundamentals live low; higher peaks are mostly overtones, so weigh them less
+                let fw: Float = f < 450 ? 1 : 450 / f
+                raw[pc] += sqrt(m / maxMag) * closeness * fw
+                if bass == nil, f < 260, m > maxMag * 0.18 { bass = pc }
+            }
+        }
+        let mx = raw.max() ?? 0
+        if mx > 0 { raw = raw.map { $0 / mx } }
+        return (raw, bass, notes)
+    }
+
+    private func publish(frame: AnalysisFrame, ranked: [ChordMatch], f0: Double?) {
+        let lvl = min(1, max(0, (20 * log10(max(frame.rms, 1e-5)) + 60) / 50))
+        level = level * 0.5 + lvl * 0.5
+        chroma = frame.chroma
+        candidates = ranked
+        if let top = ranked.first, top.score > 0.68 {
+            if pendingTop == top.id { pendingCount += 1 } else { pendingTop = top.id; pendingCount = 1 }
+            if pendingCount >= 2 { detected = top }
+        } else if !frame.hasSound {
+            detected = nil
+            pendingTop = nil
+        }
+        if let f0 {
+            pitchHistory.append(f0)
+            if pitchHistory.count > 5 { pitchHistory.removeFirst() }
+            pitch = pitchHistory.sorted()[pitchHistory.count / 2]
+        } else if !frame.hasSound {
+            pitchHistory.removeAll()
+            pitch = nil
+        }
+        frames.send(frame)
+    }
+
+    /// YIN fundamental-frequency estimator — accurate enough for a tuner.
+    static func yin(_ s: [Float], sampleRate: Double, n: Int) -> Double? {
+        let w = 2048
+        let tauMin = Int(sampleRate / 1200)
+        let tauMax = min(Int(sampleRate / 60), n - w - 2)
+        let start = n - w - tauMax - 1
+        var d = [Float](repeating: 0, count: tauMax + 2)
+        s.withUnsafeBufferPointer { p in
+            let base = p.baseAddress! + start
+            var tmp = [Float](repeating: 0, count: w)
+            for tau in 1...tauMax {
+                vDSP_vsub(base + tau, 1, base, 1, &tmp, 1, vDSP_Length(w))
+                var sum: Float = 0
+                vDSP_svesq(tmp, 1, &sum, vDSP_Length(w))
+                d[tau] = sum
+            }
+        }
+        var cmnd = [Float](repeating: 1, count: tauMax + 2)
+        var running: Float = 0
+        for tau in 1...tauMax {
+            running += d[tau]
+            cmnd[tau] = running > 0 ? d[tau] * Float(tau) / running : 1
+        }
+        var tauEst = -1
+        var tau = tauMin
+        while tau < tauMax {
+            if cmnd[tau] < 0.15 {
+                while tau + 1 < tauMax && cmnd[tau + 1] < cmnd[tau] { tau += 1 }
+                tauEst = tau
+                break
+            }
+            tau += 1
+        }
+        guard tauEst > 1, tauEst < tauMax else { return nil }
+        let a = cmnd[tauEst - 1], b = cmnd[tauEst], c = cmnd[tauEst + 1]
+        let denom = a + c - 2 * b
+        let shift: Float = denom != 0 ? 0.5 * (a - c) / denom : 0
+        return sampleRate / Double(Float(tauEst) + shift)
+    }
+}

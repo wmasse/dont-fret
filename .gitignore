@@ -1,0 +1,12 @@
+# build output
+build/
+release/
+*.dmg
+*.zip
+
+# macOS / editors
+.DS_Store
+*.swp
+.build/
+.swiftpm/
+xcuserdata/
