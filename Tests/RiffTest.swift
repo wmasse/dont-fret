@@ -50,7 +50,7 @@ extension SelfTest {
             for n in r.notes {
                 let at = Int((r.swung(n.start) * beat + 0.2) * sr)
                 let strings = Set(n.frets.map(\.string))
-                if !r.ring || n.isRest { for s in last where !strings.contains(s) { ev.append(.init(kind: .damp, string: s, midi: 0, velocity: 0, bright: 0.998, delay: at, pick: 0)) } ; last = last.intersection(strings) }
+                if !r.ring || n.isRest { for s in last where !strings.contains(s) { ev.append(.damp(s, at: at, seconds: 0.12)) } ; last = last.intersection(strings) }
                 for f in n.frets {
                     ev += GuitarSynth.leadEvents(f.string, fret: f.fret, tech: n.tech, length: (r.swung(n.end) - r.swung(n.start)) * beat,
                                                  velocity: n.frets.count > 1 ? 0.7 : 0.82, sampleRate: sr).map { var e = $0; e.delay += at; return e }

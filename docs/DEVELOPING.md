@@ -24,7 +24,11 @@ scripts/release.sh 1.1
 | 80+ songs/lessons (chords and single-note riffs), strum patterns, per-section strums | `Sources/App/Songs.swift` |
 | ChordPro / plain-text import and export | `Sources/App/ChordPro.swift` |
 | Mic chord & note detection, muted-string hints, YIN tuner, strum onsets & direction, input devices | `Sources/App/Audio.swift` |
-| Guitar sound: physical string model, acoustic body, electric clean/drive amp, bends/slides/hammer-ons/vibrato | `Sources/App/Synth.swift` |
+| Guitar sound: strums, picking, fingerstyle, techniques (the musical API) | `Sources/App/Synth.swift` |
+| Guitar engine: modal steel strings, sympathetic resonance, pickups, amp | `Sources/App/GuitarEngine.swift` |
+| Guitar body, microphones and room (synthesized impulse responses, calibration) | `Sources/App/GuitarBody.swift` |
+| DSP: partitioned convolution, filters, limiter, oversampling | `Sources/App/GuitarDSP.swift` |
+| Sound lab: offline rendering and measurement against studio recordings | `Tests/SoundLab.swift`, `scripts/soundlab/` |
 | Riffs & Solos: 18 riffs, solos, melodies and exercises with TAB, techniques, playback and mic practice | `Sources/App/Riffs.swift` |
 | Studio: takes store, audio/video recorder, live mixer with effects, offline mixdown, video export | `Sources/App/StudioEngine.swift` |
 | Studio pages: record panel, takes, editor with trim/layers/sound/export | `Sources/App/StudioView.swift` |
@@ -106,6 +110,54 @@ A token is the string (`E A D G B e`), the fret, an optional technique (`h` hamm
 - **Auto-align:** `StudioMedia.align` compares onset envelopes (5 ms hop) of the layer and the main take and searches ±0.15 s for the best match. It moves the layer only when the peak is clearly above the rest (z-score > 2), otherwise it reports no match.
 - **Undo:** `TakeEditorView` keeps a history of `Take` values; slider drags made in quick succession count as one step.
 
+## Guitar sound
+
+The guitar is synthesized, not sampled, so it can play any chord, voicing, capo position, fingerpicking pattern, bend or slide with no audio files in the app. Every constant below was measured from, or fitted to, professional studio recordings (see the sound lab below).
+
+**Signal chain.** `GuitarSynth` (`Synth.swift`) turns musical requests into string events the way hands would: strings ~7 ms apart in a strum (the median measured from GuitarSet's players), the fretting hand muting strings that aren't in the chord or stopping ones whose fret changed, up-strums catching the top 3–5 strings, a tiny per-string tuning spread in chords. `GuitarCore` (`GuitarEngine.swift`) renders them in 256-sample blocks: six modal strings → bridge → one stereo convolution (body + microphones + room for the acoustic; pickups → amp → cabinet + room for the electrics) → a look-ahead limiter. Nothing allocates on the audio thread.
+
+**Strings** (`ModalString`). Each string is a bank of resonators, one per partial (up to 16 kHz) and per polarization, run with SIMD:
+- Inharmonicity: partial *k* is at *k·f0·√(1 + B·k²)*, with *B* per string measured from isolated GuitarSet notes (2–8 × 10⁻⁵). Fundamentals are lowered slightly (`tunerCompensation`) so a tuner reads each note exactly, as on a guitar tuned with a tuner.
+- Decay: each partial loses *base + slope·f(kHz)* dB/s, per string, from the same measurements (~10 + 7·f dB/s). The vertical polarization drains faster than the horizontal, more so near the body's resonances (`bridgeMobility`) and at high frequencies, which gives a real string's punchy start and long, softly beating tail. The polarizations are split by a fraction of a hertz that varies per partial, so partials never beat in lock-step.
+- Pluck: the bridge force of a string released at point β (amplitudes ∝ sin(kπβ)/k) through the softness of the touch: `.pick`, `.finger` (fingertip with a little nail) or `.thumb`, brighter when harder. A hard pluck starts ~2 cents sharp and settles (tension modulation). Pick, finger and chuck noises are short shaped bursts.
+- Palm mutes and finger stops are extra, frequency-dependent loss. A chuck excites dead, muted strings. Free strings pick up the bridge motion of the others (sympathetic resonance).
+
+**Body, mics, room** (`GuitarBody.swift`, built at launch in the background, cached). A modal dreadnought: measured low modes (air A0 ≈ 100 Hz, top ≈ 190–200 Hz, back ≈ 235 Hz, plate modes to 1 kHz) plus statistically drawn dense modes above 1 kHz, heard by two "microphones" (12th fret and lower bout) for a mono-compatible stereo image, then early reflections and a smooth tail (~1.3 s in the mids). A minimum-phase 1/3-octave curve, `acousticCalibration`, makes the whole chain match the long-term spectrum of the studio recordings; `acousticPolish` adds a light mix EQ on top (low cut, a little less box, a little air). The electric tones use a speaker-cabinet response and a smaller room instead.
+
+**Levels.** About −17 LUFS for the acoustic, −15 LUFS for the electrics, matched to the previous engine so the app's volume is unchanged. The acoustic isn't compressed: it keeps a real recording's dynamics (peaks ~15 dB above the average, like the studio takes) and only the limiter trims the first milliseconds of the loudest strums.
+
+### Sound lab
+
+`Tests/SoundLab.swift` and `scripts/soundlab/` measure the guitar against real recordings. Reference: [GuitarSet](https://zenodo.org/records/3371780) (Xi, Bittner, Pauwels, Ye, Bello, ISMIR 2018; CC BY 4.0): 360 excerpts by six guitarists, five styles, strummed and picked, recorded with a Neumann U-87 and annotated note by note. Download `audio_mono-mic.zip` and `annotation.zip` (≈700 MB) and unzip each into its own folder.
+
+```bash
+# fast renderer (engine files only, ~10 s to build)
+swiftc -O -parse-as-library Sources/App/GuitarDSP.swift Sources/App/GuitarBody.swift Sources/App/GuitarEngine.swift scripts/soundlab/RenderEvents.swift -o build/render-events
+# measure the real guitars: strum timing, inharmonicity, partial decay, attack, long-term spectrum
+python3 -I scripts/soundlab/measure.py <annotation dir> <mic dir>
+# re-synthesize 20 performances note for note and score them (add --legacy <renderer> to compare another build)
+python3 -I scripts/soundlab/resynth.py --ann <annotation dir> --mic <mic dir> --render build/render-events --out build/soundlab
+# fit the calibration curve (measure without the mix polish), then paste it into GuitarBody.acousticCalibration
+python3 -I scripts/soundlab/resynth.py ... --polish 0 --calibrate
+# demo recordings of every playing style, plus their event lists
+build/selftest --demos build/demos
+```
+
+`resynth.py` aligns each re-synthesis to its recording (GuitarSet's onsets sit ~9 ms after the sound reaches the mic) and reports, lower being closer to real: log-mel spectral distance (`lsd`), long-term spectrum error (`ltas`), loudness-envelope error per octave (`env`), brightness relative to real (`cent`, attack = first 30 ms), and decay per octave band. It writes spectrograms (real / new / old) and the audio. `RenderEvents` takes `--room`, `--polish`, `--cal` and `--set name=value` (the `GuitarTuning` knobs) so settings can be swept without rebuilding the app.
+
+Current scores on the 20-clip set (old = the previous Karplus–Strong engine):
+
+| | lsd | ltas | env | brightness | decay 1–8 kHz vs real |
+|---|---|---|---|---|---|
+| New | 12.3 dB | 4.2 dB | 10.1 dB | 1.05× | within 1–6 dB/s |
+| Old | 13.8 dB | 7.4 dB | 10.0 dB | 0.41× | up to 2× off |
+
+Known gap: attacks are ~1.3× brighter than the recordings relative to their sustain.
+
+![Spectrograms of a strummed GuitarSet excerpt: the studio recording (top), the new engine playing the same notes (middle), the previous engine (bottom)](soundlab/spectrogram-real-new-old.jpg)
+
+*8 s of singer-songwriter strumming from GuitarSet (player 03, CC BY 4.0), 40 Hz–16 kHz on a log scale: the U-87 recording (top), the new engine re-synthesizing the same notes (middle), the previous engine (bottom).*
+
 ## Detection self-test
 
 ```bash
@@ -122,5 +174,6 @@ The test synthesizes every chord shape and single note and runs them through the
 - Automatic chords from a full band mix (10 synthesized songs with guitar, bass, drums and melody): tempo, key and time signature 100%, bars 92%, whole progression 100%.
 - Melody from a full band mix (8 synthesized 40 s songs with a sung-style lead over wide strummed guitars, bass and drums; `build/selftest --melody`): pitch right about 90% of the time the voice sings, notes about 70% F-measure (right pitch, onset within 100 ms), about 67% placed on the right beat. A quiet voice under loud guitars is the hard case (40–60%).
 - Melody on real recordings (`build/selftest --melody-bench`, add `--verbose` for every note): 13 store previews of public-domain tunes we know note for note (*Silent Night*, *Amazing Grace*, *Jingle Bells*, *Joy to the World*, *Deck the Halls*, *When the Saints*, *Twinkle Twinkle*, *Happy Birthday*, *We Wish You a Merry Christmas*) sung by Bing Crosby, Kelly Clarkson, Elvis, Judy Collins, Michael Bublé, Sinatra, Nat King Cole, Louis Armstrong, Mariah Carey and children's recordings. The extracted melody is aligned to the written tune in any key and tempo, and each difference is classified. Currently 68% of the written notes come out right (octave slips 6%, a semitone off 5%, a tone off 6%, other wrong 8%, missed 7%); 28% of the heard notes aren't in the written tune, mostly backing vocals, horn and band fills, and singers' ornaments. Swing and gospel arrangements where the band answers the singer (Sinatra, Elvis) are the hard cases (30–50%). Previews download once into `build/bench` (needs the network).
+- Guitar sound: every note from E2 to E5 within 4.4 cents (1.9 average) by the app's own tuner; bends, slides and hammer-ons within 3 cents; no clipping; partitioned convolution matches direct convolution; stereo correlation ≈ 0.6; thumb < finger < pick brightness; sympathetic resonance stays stable; the slowest 256-sample block takes ~2 ms of its 5.8 ms.
 
 These numbers come from synthesized sound. A real guitar in a real room will differ, so run **Settings → Microphone & timing → Calibrate** first.

@@ -110,13 +110,20 @@ final class ProgressionPlayer: ObservableObject {
                 }
             }
         case "picked":
-            // fingerpicked arpeggio in eighths: bass, then up and down the treble strings
+            // fingerpicked arpeggio in eighths: the thumb takes the bass, the fingers go up and down the
+            // treble strings, and the top string joins the thumb on the downbeat (a "pinch")
             let treble = Array(played.dropFirst().suffix(4))
             let seq = treble.isEmpty ? [bass] : [bass] + treble + treble.dropFirst().dropLast().reversed()
             for k in 0..<max(1, Int((beats * 2).rounded())) {
                 let s = seq[k % seq.count]
                 let strong = k % 4 == 0
-                out.append(Step(at: Double(k) * 0.5) { sh in synth.pickString(s, fret: sh.frets[s], velocity: strong ? 0.75 : 0.55, bright: 0.5) })
+                let touch: Touch = s == bass ? .thumb : .finger
+                out.append(Step(at: Double(k) * 0.5) { sh in
+                    synth.pickString(s, fret: sh.frets[s], velocity: strong ? 0.75 : 0.55, bright: touch == .thumb ? 0.45 : 0.55, touch: touch)
+                    if k == 0, let top = treble.last {
+                        synth.pickString(top, fret: sh.frets[top], velocity: 0.55, bright: 0.55, touch: .finger)
+                    }
+                })
             }
         case "power":
             // palm-muted eighths on the low strings; the first hit of each chord rings out

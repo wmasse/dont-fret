@@ -309,8 +309,15 @@ final class RiffPlayer: ObservableObject {
             sounding.subtract(sounding.subtracting(strings))
         }
         let vel: Float = n.frets.count > 1 ? 0.7 : 0.82
-        for f in n.frets { synth.lead(f.string, fret: f.fret, tech: n.tech, length: length, velocity: vel) }
+        for f in n.frets { synth.lead(f.string, fret: f.fret, tech: n.tech, length: length, velocity: vel, touch: touch(for: riff, string: f.string)) }
         sounding.formUnion(strings)
+    }
+
+    /// Fingerstyle pieces on the acoustic (let-ring arpeggios, classical, flamenco) are played with the
+    /// thumb on the bass strings and the fingers on the treble; everything else with a pick.
+    nonisolated static func touch(for riff: Riff, string: Int) -> Touch {
+        guard riff.tone == .acoustic, riff.ring || riff.style == "Classical" || riff.style == "Flamenco" else { return .pick }
+        return string < 3 ? .thumb : .finger
     }
 
     func stop() {

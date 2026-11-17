@@ -55,6 +55,7 @@ struct SelfTest {
         if CommandLine.arguments.contains("--melody") { melodyChecks(); return }
         if CommandLine.arguments.contains("--lyrics") { lyricsChecks(); return }
         if CommandLine.arguments.contains("--lyrics-bench") { lyricsBench(); return }
+        if soundLab(CommandLine.arguments) { return }
         var freeOK = 0, verifyOK = 0, total = 0, falseAccept = 0, falseTotal = 0
         var misses: [String] = []
         var byLevel: [Int: (Int, Int)] = [:]
