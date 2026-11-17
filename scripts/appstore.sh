@@ -7,8 +7,15 @@
 #   e.g. scripts/appstore.sh 1.1            (build number defaults to a timestamp)
 #        scripts/appstore.sh 1.1 3 --upload
 #
-# Upload needs an App Store Connect API key in ~/.appstoreconnect/private_keys and:
-#   ASC_KEY_ID (default 65M28WPBKC)  ASC_ISSUER_ID (default: this team's issuer)
+# Signing uses whichever team member's certificates are in this Mac's keychain:
+#   "Apple Distribution: <name> (9A9HR6WT4K)" and "3rd Party Mac Developer Installer: <name> (9A9HR6WT4K)"
+# (Xcode → Settings → Accounts → Manage Certificates creates both). SIGN_NAME picks one if there are several.
+#
+# Upload, either:
+#   an App Store Connect team API key in ~/.appstoreconnect/private_keys with
+#     ASC_KEY_ID (default 65M28WPBKC) and ASC_ISSUER_ID (default: this team's issuer), or
+#   your Apple ID: ASC_APPLE_ID=you@example.com and an app-specific password (appleid.apple.com)
+#     saved once with: xcrun altool --store-password-in-keychain-item ASC_PASSWORD -u you@example.com -p <password>
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,8 +28,15 @@ done
 ASC_KEY_ID="${ASC_KEY_ID:-65M28WPBKC}"
 ASC_ISSUER_ID="${ASC_ISSUER_ID:-d03fc0f2-5b10-47df-8d20-26c8581af9ca}"
 TEAM="9A9HR6WT4K"
-APP_SIGN="Apple Distribution: Jeremy Theodore Zay ($TEAM)"
-PKG_SIGN="3rd Party Mac Developer Installer: Jeremy Theodore Zay ($TEAM)"
+# the first matching certificate for this team (narrowed by SIGN_NAME if set)
+identity() {
+  security find-identity -v | grep -F "\"$1: " | grep -F "($TEAM)\"" | grep -F "${SIGN_NAME:-}" \
+    | head -1 | sed -E 's/.*"(.*)"/\1/'
+}
+APP_SIGN="$(identity "Apple Distribution")"
+PKG_SIGN="$(identity "3rd Party Mac Developer Installer")"
+[[ -n "$APP_SIGN" ]] || { echo "✗ No \"Apple Distribution: … ($TEAM)\" certificate in the keychain"; exit 1; }
+[[ -n "$PKG_SIGN" ]] || { echo "✗ No \"3rd Party Mac Developer Installer: … ($TEAM)\" certificate in the keychain"; exit 1; }
 OUT="build/appstore"
 APP="$OUT/Don't Fret.app"
 PKG="release/DontFret-$VERSION-$BUILD.pkg"
@@ -76,7 +90,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 rm -f "$OUT"/DontFret-*
 
-echo "→ Signing…"
+echo "→ Signing as $APP_SIGN…"
 codesign --force --options runtime --timestamp --sign "$APP_SIGN" \
   --entitlements signing/DontFret.entitlements "$APP"
 codesign --verify --strict --verbose=2 "$APP"
@@ -86,10 +100,15 @@ rm -f "$PKG"
 productbuild --component "$APP" /Applications --sign "$PKG_SIGN" "$PKG"
 
 if [[ $UPLOAD == 1 ]]; then
+  if [[ -n "${ASC_APPLE_ID:-}" ]]; then
+    AUTH=(-u "$ASC_APPLE_ID" -p "@keychain:ASC_PASSWORD")
+  else
+    AUTH=(--apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID")
+  fi
   echo "→ Validating with App Store Connect…"
-  xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+  xcrun altool --validate-app -f "$PKG" -t macos "${AUTH[@]}"
   echo "→ Uploading…"
-  xcrun altool --upload-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+  xcrun altool --upload-app -f "$PKG" -t macos "${AUTH[@]}"
   echo "✓ Uploaded $VERSION ($BUILD). It appears in TestFlight once Apple finishes processing (usually 5–30 min)."
 else
   echo "✓ Built $PKG  (add --upload to send it to App Store Connect)"
