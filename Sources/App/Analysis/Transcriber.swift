@@ -233,7 +233,8 @@ enum Transcriber {
         guard !bars.isEmpty else { throw TranscribeError.noBeat }
 
         // 7. sections
-        let (sections, startBar) = makeSectionsAndStart(bars.map(\.tokens), keyRoot: keyRoot, minorKey: minorKey, flat: flat)
+        let (madeSections, startBar) = makeSectionsAndStart(bars.map(\.tokens), keyRoot: keyRoot, minorKey: minorKey, flat: flat)
+        var sections = madeSections
 
         // 8. easiest capo
         let capo = easiestCapo(Set(sections.flatMap { $0.tokens(beatsPerBar: meter).map(\.chord) }))
@@ -241,8 +242,42 @@ enum Transcriber {
         // 9. the strumming rhythm, from attacks in the guitar's range (≈200 Hz – 3 kHz, mostly
         //    skipping kick drum and hi-hats)
         let mid = onsetEnvelope(samples, n: 2048, hop: hop, binRange: 10..<140)
-        let rhythm = detectStrum(mid, fps: fps, beatTimes: beatTimes, phase: phase, meter: meter, bpm: bpm,
-                                 quietBeats: Set(beats.indices.filter { beats[$0].rms < medianRMS * 0.3 }))
+        let quiet = Set(beats.indices.filter { beats[$0].rms < medianRMS * 0.3 })
+        var rhythm = detectStrum(mid, fps: fps, beatTimes: beatTimes, phase: phase, meter: meter, bpm: bpm, quietBeats: quiet)
+        // a whole song often changes its strumming between parts (a sparse verse, a busy chorus):
+        // work each part's pattern out from that part's own bars
+        if Set(sections.map(\.name)).count > 1 {
+            let beatIndex = Dictionary(beatTimes.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+            var groups: [String: [Int]] = [:]
+            var cursor = 0
+            for sec in sections {
+                let perPass = Int((sec.tokens(beatsPerBar: meter).reduce(0) { $0 + $1.beats } / Double(meter)).rounded())
+                let count = perPass * max(1, sec.repeats)
+                for k in cursor..<min(bars.count, cursor + count) {
+                    if let bi = beatIndex[bars[k].start] { groups[sec.name, default: []].append(bi) }
+                }
+                cursor += count
+            }
+            var heard: [String: (pattern: String, clarity: Double, bars: Int)] = [:]
+            for (name, starts) in groups where starts.count >= 4 {
+                let r = detectStrum(mid, fps: fps, beatTimes: beatTimes, barStarts: starts, meter: meter, bpm: bpm, quietBeats: quiet)
+                if r.clarity > 0 { heard[name] = (r.pattern, r.clarity, starts.count) }
+            }
+            if heard.count > 1 {
+                // the part with the most bars sets the song's main pattern
+                let top = heard.max { $0.value.bars == $1.value.bars ? $0.key > $1.key : $0.value.bars < $1.value.bars }!
+                if top.value.clarity >= 0.35 { rhythm.pattern = top.value.pattern; rhythm.clarity = top.value.clarity }
+                for i in sections.indices {
+                    guard let h = heard[sections[i].name], h.pattern != rhythm.pattern else { continue }
+                    let diff = h.pattern.count == rhythm.pattern.count
+                        ? zip(h.pattern, rhythm.pattern).filter { $0 != $1 }.count : (h.bars >= 8 ? 2 : 0)
+                    // one slot's difference needs plenty of bars behind it; a bigger one needs less
+                    if (diff >= 2 && h.clarity >= 0.4) || (diff == 1 && h.bars >= 8 && h.clarity >= 0.5) {
+                        sections[i].strum = h.pattern
+                    }
+                }
+            }
+        }
 
         stage?(3)
         var t = Transcription(bpm: bpm, beatsPerBar: meter, keyRoot: keyRoot, minorKey: minorKey, bars: bars, sections: sections,
@@ -578,14 +613,20 @@ enum Transcriber {
     /// then writes the strong positions as a down/up pattern (down on the beat, up on the "&").
     static func detectStrum(_ env: [Float], fps: Double, beatTimes: [Double], phase: Int, meter: Int, bpm: Double,
                             quietBeats: Set<Int>) -> (pattern: String, clarity: Double, feel: String) {
+        detectStrum(env, fps: fps, beatTimes: beatTimes, barStarts: Array(stride(from: phase, to: beatTimes.count, by: meter)),
+                    meter: meter, bpm: bpm, quietBeats: quietBeats)
+    }
+
+    /// The same, over just the bars that start on the given beats (one part of the song).
+    static func detectStrum(_ env: [Float], fps: Double, beatTimes: [Double], barStarts: [Int], meter: Int, bpm: Double,
+                            quietBeats: Set<Int>) -> (pattern: String, clarity: Double, feel: String) {
         let fallback = (meter == 3 ? "D-DUDU" : "D-DU-UDU", 0.0, "strum")
-        guard env.count > 10, beatTimes.count > phase + meter * 2 else { return fallback }
+        guard env.count > 10, barStarts.count >= 2 else { return fallback }
         let slots = meter * 4
         var profile = [Double](repeating: 0, count: slots)
         var bars = 0
-        var b = phase
-        while b + meter < beatTimes.count {
-            if (b..<(b + meter)).contains(where: { quietBeats.contains($0) }) { b += meter; continue }
+        for b in barStarts where b >= 0 && b + meter < beatTimes.count {
+            if (b..<(b + meter)).contains(where: { quietBeats.contains($0) }) { continue }
             var row = [Double](repeating: 0, count: slots)
             for j in 0..<slots {
                 let beat = b + j / 4
@@ -598,7 +639,6 @@ enum Transcriber {
             let mx = row.max() ?? 0
             if mx > 0 { for j in 0..<slots { profile[j] += row[j] / mx } }
             bars += 1
-            b += meter
         }
         guard bars >= 2 else { return fallback }
         profile = profile.map { $0 / Double(bars) }
@@ -634,7 +674,9 @@ enum Transcriber {
             if close.count == 1 { pattern = close[0].0.pattern }
         }
         // clarity: how far apart strong and weak positions are
-        let strong = grid.filter { $0 >= threshold }, weak = grid.filter { $0 < threshold }
+        // (in 8th-note playing the empty 16ths in between count as weak positions too, so a bar
+        // strummed on every 8th still reads as clear)
+        let strong = grid.filter { $0 >= threshold }, weak = grid.filter { $0 < threshold } + (use16 ? [] : between)
         let clarity = strong.isEmpty || weak.isEmpty ? 0.3 :
             min(1, (strong.reduce(0, +) / Double(strong.count) - weak.reduce(0, +) / Double(weak.count)) * 1.6)
         return (pattern, clarity, feel)

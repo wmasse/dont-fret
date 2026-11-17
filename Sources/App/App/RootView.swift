@@ -69,13 +69,12 @@ struct Logo: View {
     var size: CGFloat = 30
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous).fill(Theme.accentGradient)
-                Image(systemName: "guitars.fill")
-                    .font(.system(size: size * 0.46, weight: .semibold))
-                    .foregroundStyle(Theme.onAccent)
-            }
-            .frame(width: size, height: size)
+            // The app icon itself; its artwork fills about 80% of the image, so draw it larger and pull the margins in.
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size * 1.24, height: size * 1.24)
+                .padding(-size * 0.12)
             Text("Don’t Fret")
                 .font(.system(size: size * 0.6, weight: .bold))
                 .foregroundStyle(Theme.text)
@@ -88,12 +87,12 @@ struct SidebarView: View {
     @Environment(ProgressStore.self) var progress
 
     private var selection: Binding<SidebarItem?> {
-        Binding(get: { app.selection }, set: { if let v = $0 { app.selection = v; if v == .songs { app.songPath = [] } } })
+        Binding(get: { app.selection }, set: { if let v = $0 { app.selection = v; if v == .songs { app.songPath = [] }; if v == .library { app.libraryPath = [] } } })
     }
 
     var body: some View {
         List(selection: selection) {
-            Section("Play") { row(.home); row(.songs); row(.studio) }
+            Section("Play") { row(.home); row(.songs); row(.library); row(.studio) }
             Section("Learn") { row(.riffs); row(.chords); row(.strum); row(.trainer); row(.changes) }
             Section("Tools") { row(.tuner); row(.progress); row(.settings) }
         }
@@ -159,6 +158,7 @@ struct DetailView: View {
                     SongLibraryView()
                         .navigationDestination(for: Song.self) { SongDetailView(song: $0) }
                 }
+            case .library: MySongsPage()
             case .riffs: RiffLibraryView()
             case .studio: StudioView()
             case .chords: ChordLibraryView()

@@ -206,8 +206,9 @@ struct StudioHome: View {
                     try? await StudioMedia.extractAudio(from: url, to: store.url(audio))
                 }
                 let real = await StudioMedia.duration(store.url(audio))
-                let take = Take(id: id, name: store.nextName, created: Date(), isVideo: isVideo, file: file, audioFile: audio,
+                var take = Take(id: id, name: store.nextName, created: Date(), isVideo: isVideo, file: file, audioFile: audio,
                                 duration: real > 0 ? real : seconds)
+                take.song = backingID.isEmpty ? nil : backingID
                 store.add(take)
                 saving = false
                 onOpen(id)
@@ -329,7 +330,9 @@ struct TakeEditorView: View {
     let takeID: String
     var store: StudioStore
     var onBack: () -> Void
+    @Environment(ProgressStore.self) var progress
     @StateModel private var playback = StudioPlayback()
+    @State private var vocals = VocalWork()
     @StateModel private var dubber = StudioRecorder()
     @State private var name = ""
     @State private var layerStart: Double?
@@ -378,9 +381,12 @@ struct TakeEditorView: View {
     private func apply(_ t: Take, from before: Take) {
         store.update(t)
         playback.update(t)
+        vocals.sync(t, store: store)
         if timingKey(before) != timingKey(t) {
             playback.load(t, store: store)
             if playback.playing && !dubber.recording { playback.play(t, store: store, from: playback.position, after: 0.03) }
+        } else {
+            playback.refreshFiles(t, store: store)
         }
         if let s = selectedLayer, !t.layers.contains(where: { $0.id == s }) { selectedLayer = nil }
     }
@@ -419,6 +425,7 @@ struct TakeEditorView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             timelineCard
+            vocalCard
             HStack(alignment: .top, spacing: 16) {
                 soundCard.frame(maxWidth: .infinity)
                 exportCard.frame(width: 320)
@@ -427,8 +434,11 @@ struct TakeEditorView: View {
         .onAppear {
             name = take.name
             playback.load(take, store: store)
+            vocals.onReady = { playback.refreshFiles(take, store: store) }
+            vocals.sync(take, store: store)
         }
         .onDisappear {
+            vocals.cancelAll()
             playback.stop()
             if dubber.recording { dubber.stop() }
             dubber.shutdown()
@@ -459,6 +469,7 @@ struct TakeEditorView: View {
                     Pill(icon: "clock", text: "\(formatTime(take.length, tenths: take.duration < 60)) of \(formatTime(take.duration, tenths: take.duration < 60))")
                     Pill(icon: "square.3.layers.3d", text: "\(take.layers.count + 1) track\(take.layers.isEmpty ? "" : "s")")
                     if !take.edit.cuts.isEmpty { Pill(icon: "scissors", text: "\(take.edit.cuts.count) cut\(take.edit.cuts.count == 1 ? "" : "s")") }
+                    if take.edit.vocal.isActive || take.layers.contains(where: { $0.vocal.isActive }) { Pill(icon: "waveform.and.mic", text: "Vocal tools") }
                     Text(take.created.formatted(date: .abbreviated, time: .shortened)).font(Theme.font(12)).foregroundStyle(Theme.textFaint)
                 }
             }
@@ -637,7 +648,7 @@ struct TakeEditorView: View {
             FlowLayout(spacing: 8) {
                 ForEach(TakeEdit.presets, id: \.name) { p in
                     Chip(title: p.name, icon: p.icon, selected: take.edit.preset == p.name) {
-                        change("preset") { p.apply(&$0.edit); $0.edit.preset = p.name }
+                        change("preset") { p.apply(&$0.edit); $0.edit.preset = p.name; $0.edit.vocal.chain = p.name == "Vocal" }
                     }
                 }
             }
@@ -685,6 +696,224 @@ struct TakeEditorView: View {
         }
     }
 
+    // MARK: vocals
+
+    /// The track the Vocals card is working on: the selected layer, or the main take.
+    private var vocalLayer: Overdub? { selectedLayer.flatMap { id in take.layers.first { $0.id == id } } }
+    private var vocalFile: String { vocalLayer?.file ?? take.audioFile }
+    private var vocalFX: VocalFX { vocalLayer?.vocal ?? take.edit.vocal }
+
+    private func setVocal(_ key: String, _ f: (inout VocalFX) -> Void) {
+        let id = vocalLayer?.id
+        change("vocal-\(key)-\(id ?? "main")") { t in
+            if let id, let i = t.layers.firstIndex(where: { $0.id == id }) { f(&t.layers[i].vocal) } else { f(&t.edit.vocal) }
+        }
+    }
+
+    private func vocalBinding<V>(_ kp: WritableKeyPath<VocalFX, V>) -> Binding<V> {
+        Binding(get: { vocalFX[keyPath: kp] }, set: { v in setVocal("\(kp)") { $0[keyPath: kp] = v } })
+    }
+
+    /// The key of the song played as a backing while recording, if there was one.
+    private var songKey: (root: Int, scale: VocalScale, name: String)? {
+        guard let id = take.song, let k = progress.allSongs.first(where: { $0.id == id })?.key,
+              let first = k.split(separator: " ").first, let pc = Theory.pitchClass(of: String(first)) else { return nil }
+        return (pc, k.hasSuffix("minor") ? .minor : .major, k)
+    }
+
+    private var tuneBinding: Binding<Bool> {
+        Binding(get: { vocalFX.tune }, set: { on in
+            let song = songKey
+            setVocal("tune") { fx in
+                fx.tune = on
+                // start in the song's key; without one, it's worked out from the singing
+                if on, fx.root == nil, let song { fx.root = song.root; fx.scale = song.scale }
+            }
+        })
+    }
+
+    private var chainBinding: Binding<Bool> {
+        Binding(get: { vocalFX.chain }, set: { on in
+            guard vocalLayer == nil else { setVocal("chain") { $0.chain = on }; return }
+            // on the main track the chain is the Vocal sound preset (its plate comes from the Space)
+            change("preset") { t in
+                if on, let p = TakeEdit.presets.first(where: { $0.name == "Vocal" }) { p.apply(&t.edit); t.edit.preset = p.name }
+                else if !on, t.edit.preset == "Vocal", let p = TakeEdit.presets.first { p.apply(&t.edit); t.edit.preset = p.name }
+                t.edit.vocal.chain = on
+            }
+        })
+    }
+
+    private func speedName(_ v: Double) -> String {
+        v >= 92 ? "Hard" : (v >= 65 ? "Fast" : (v >= 35 ? "Medium" : "Natural"))
+    }
+
+    private var vocalCard: some View {
+        let fx = vocalFX, file = vocalFile
+        let track = vocals.tracks[file]
+        let detected = track.flatMap(VocalProcessor.detectKey)
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Vocals", subtitle: "Pitch correction, a vocal chain, doubling and harmony. Rendered in the background, then heard live and in exports.") {
+                if let p = vocals.busy[file] {
+                    HStack(spacing: 8) {
+                        ProgressView(value: p).frame(width: 110)
+                        Text(fx.isActive ? "Processing…" : "Reading pitch…").font(Theme.font(12, .semibold)).foregroundStyle(Theme.textDim)
+                    }
+                } else if let e = vocals.failed[file] {
+                    Label(e, systemImage: "exclamationmark.triangle").font(Theme.font(12)).foregroundStyle(Theme.warn).lineLimit(1)
+                } else if fx.isActive {
+                    Label("Ready", systemImage: "checkmark.circle.fill").font(Theme.font(12, .semibold)).foregroundStyle(Theme.success)
+                }
+            }
+            if !take.layers.isEmpty {
+                Picker("Track", selection: Binding(get: { vocalLayer?.id ?? "main" }, set: { selectedLayer = $0 == "main" ? nil : $0 })) {
+                    Text("Main").tag("main")
+                    ForEach(take.layers) { l in Text(l.name).tag(l.id) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 560)
+            }
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: tuneBinding) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Pitch correction").font(Theme.font(13, .semibold))
+                            Text("Pulls each note to the nearest note in the key").font(Theme.font(11.5)).foregroundStyle(Theme.textDim)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+                        GridRow {
+                            Label("Key", systemImage: "music.note").font(Theme.font(13, .medium)).foregroundStyle(Theme.textDim)
+                            HStack(spacing: 8) {
+                                Picker("Key", selection: Binding(get: { fx.root ?? -1 }, set: { v in setVocal("root") { $0.root = v < 0 ? nil : v } })) {
+                                    Text(detected.map { "Auto (\(Theory.name($0.root, flat: Theory.flatKeys.contains($0.root))))" } ?? "Auto").tag(-1)
+                                    Divider()
+                                    ForEach(0..<12, id: \.self) { pc in Text(Theory.name(pc, flat: Theory.flatKeys.contains(pc))).tag(pc) }
+                                }
+                                .labelsHidden().frame(width: 110)
+                                Picker("Scale", selection: vocalBinding(\.scale)) {
+                                    ForEach(VocalScale.allCases) { sc in Text(sc.rawValue).tag(sc) }
+                                }
+                                .labelsHidden().frame(width: 160)
+                            }
+                            Text("")
+                        }
+                        GridRow {
+                            Label("Retune speed", systemImage: "speedometer").font(Theme.font(13, .medium)).foregroundStyle(Theme.textDim)
+                            VStack(spacing: 2) {
+                                Slider(value: vocalBinding(\.speed), in: 0...100)
+                                HStack {
+                                    Text("Natural").font(Theme.font(10.5)).foregroundStyle(Theme.textFaint)
+                                    Spacer()
+                                    Text("Hard · robotic").font(Theme.font(10.5)).foregroundStyle(Theme.textFaint)
+                                }
+                            }
+                            Text(speedName(fx.speed)).font(Theme.font(12, .semibold)).foregroundStyle(Theme.text).frame(width: 56, alignment: .trailing)
+                        }
+                        GridRow {
+                            Label("Amount", systemImage: "dial.medium").font(Theme.font(13, .medium)).foregroundStyle(Theme.textDim)
+                            Slider(value: vocalBinding(\.amount), in: 0...100)
+                            Text("\(Int(fx.amount.rounded()))%").font(Theme.font(12, .semibold)).monospacedDigit().foregroundStyle(Theme.text).frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .disabled(!fx.tune).opacity(fx.tune ? 1 : 0.45)
+                    Text(keyHint(fx, detected: detected)).font(Theme.font(11.5)).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: chainBinding) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Vocal chain").font(Theme.font(13, .semibold))
+                            Text("High-pass, de-esser, compressor, presence EQ and a plate reverb").font(Theme.font(11.5)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Toggle(isOn: vocalBinding(\.double)) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Double").font(Theme.font(13, .semibold))
+                            Text("Two slightly different copies, spread left and right").font(Theme.font(11.5)).foregroundStyle(Theme.textDim)
+                        }
+                    }
+                    HStack(spacing: 10) {
+                        Label("Harmony", systemImage: "music.quarternote.3").font(Theme.font(13, .semibold)).foregroundStyle(Theme.text)
+                        Picker("Harmony", selection: vocalBinding(\.harmony)) {
+                            ForEach(VocalHarmony.allCases) { h in Text(h.rawValue).tag(h) }
+                        }
+                        .labelsHidden().frame(width: 140)
+                    }
+                }
+                .toggleStyle(.switch)
+                .frame(width: 320, alignment: .leading)
+            }
+            pitchView(file: file, fx: fx, track: track)
+        }
+        .card()
+    }
+
+    private func keyHint(_ fx: VocalFX, detected: (root: Int, scale: VocalScale)?) -> String {
+        var parts: [String] = []
+        if let s = songKey { parts.append("Song key: \(s.name) (from the backing you played along with).") }
+        if let d = detected { parts.append("Heard in your singing: \(Theory.name(d.root, flat: Theory.flatKeys.contains(d.root))) \(d.scale.rawValue.lowercased()).") }
+        if fx.tune && fx.speed >= 92 { parts.append("Hard speed snaps instantly — the robotic effect.") }
+        return parts.isEmpty ? "Auto works the key out from the notes you sing." : parts.joined(separator: " ")
+    }
+
+    @ViewBuilder
+    private func pitchView(file: String, fx: VocalFX, track: PitchTrack?) -> some View {
+        let offset = vocalLayer?.start ?? 0
+        let span: ClosedRange<Double> = vocalLayer.map { $0.used.from...max($0.used.from + 0.1, $0.used.to) }
+            ?? take.edit.trimStart...max(take.edit.trimStart + 0.1, take.end)
+        if let track {
+            let key = VocalProcessor.key(for: fx, track: track)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 14) {
+                    Text("PITCH").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+                    legend(Theme.textDim, "What you sang")
+                    if fx.tune { legend(Theme.accent, "Corrected") }
+                    if fx.harmony != .off { legend(pitchHarmonyColor, "Harmony") }
+                    Spacer()
+                    Text("Lines are the notes of \(Theory.name(key.root, flat: Theory.flatKeys.contains(key.root))) \(key.scale.rawValue.lowercased()) · click to jump")
+                        .font(Theme.font(11)).foregroundStyle(Theme.textFaint)
+                }
+                GeometryReader { g in
+                    ZStack(alignment: .topLeading) {
+                        PitchGraph(id: file, track: track, fx: fx, root: key.root, scale: key.scale, offset: offset, range: span, cuts: take.edit.cuts)
+                            .equatable()
+                        let px = PitchGraph.gutter + CGFloat((playback.position - span.lowerBound) / (span.upperBound - span.lowerBound)) * (g.size.width - PitchGraph.gutter)
+                        if px >= PitchGraph.gutter && px <= g.size.width {
+                            Rectangle().fill(Theme.text).frame(width: 2, height: g.size.height).offset(x: px - 1)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(SpatialTapGesture().onEnded { v in
+                        let f = Double((v.location.x - PitchGraph.gutter) / max(1, g.size.width - PitchGraph.gutter))
+                        playback.seek(take, store: store, to: span.lowerBound + max(0, min(1, f)) * (span.upperBound - span.lowerBound))
+                    })
+                }
+                .frame(height: 170)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface2.opacity(0.6)))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel("Pitch graph")
+            }
+        } else if vocals.busy[file] == nil {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.path.ecg").foregroundStyle(Theme.accent)
+                Text(fx.needsPitch ? "Reading the pitch of this track…" : "See every note you sang against the notes of the key.")
+                    .font(Theme.font(12.5)).foregroundStyle(Theme.textDim)
+                if !fx.needsPitch {
+                    Button { vocals.loadTrack(file, store: store, analyse: true) } label: { Label("Show Pitch", systemImage: "chart.xyaxis.line") }
+                        .buttonStyle(ToolButtonStyle())
+                }
+            }
+        }
+    }
+
+    private func legend(_ c: Color, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(c).frame(width: 14, height: 3)
+            Text(title).font(Theme.font(11, .medium)).foregroundStyle(Theme.textDim)
+        }
+    }
+
     // MARK: export
 
     private var exportCard: some View {
@@ -719,7 +948,7 @@ struct TakeEditorView: View {
                         .buttonStyle(SecondaryButtonStyle())
                 }
             }
-            Text("Exports use your trim, layers, sound settings and fades\(take.isVideo ? " — fades also fade the picture to black" : "").")
+            Text("Exports use your trim, layers, sound settings, vocal tools and fades\(take.isVideo ? " — fades also fade the picture to black" : "").")
                 .font(Theme.font(11.5)).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
         }
         .card()
@@ -1159,6 +1388,94 @@ struct TimelineLanes: View {
             Rectangle().fill(Theme.text).frame(width: 2, height: height).offset(x: x(playback.position, w) - 1)
             Image(systemName: "arrowtriangle.down.fill").font(.system(size: 9)).foregroundStyle(Theme.text)
                 .offset(x: x(playback.position, w) - 5, y: ruler - 10)
+        }
+    }
+}
+
+// MARK: - Pitch graph
+
+private let pitchHarmonyColor = Color(hex: 0xB78CFF)
+
+/// What was sung against what it's corrected to, on a grid of the key's notes.
+struct PitchGraph: View, Equatable {
+    static let gutter: CGFloat = 38
+    let id: String
+    let track: PitchTrack
+    let fx: VocalFX
+    let root: Int
+    let scale: VocalScale
+    /// Where (in take time) the recording's first sample lands.
+    let offset: Double
+    /// The part of the take shown.
+    let range: ClosedRange<Double>
+    let cuts: [Cut]
+
+    static func == (a: PitchGraph, b: PitchGraph) -> Bool {
+        a.id == b.id && a.track.f0.count == b.track.f0.count && a.fx == b.fx && a.root == b.root && a.scale == b.scale
+            && a.offset == b.offset && a.range == b.range && a.cuts == b.cuts
+    }
+
+    var body: some View {
+        let plan = VocalProcessor.plan(track, fx: fx, key: (root, scale))
+        let fs = track.frameSeconds
+        let first = max(0, Int(((range.lowerBound - offset) / fs).rounded(.down)))
+        let last = min(plan.input.count - 1, Int(((range.upperBound - offset) / fs).rounded(.up)))
+        let pcs = Set(scale.steps.map { ($0 + root) % 12 })
+        return Canvas { ctx, size in
+            guard last > first else { return }
+            var seen: [Float] = []
+            for i in first...last where !plan.input[i].isNaN { seen.append(plan.input[i]) }
+            if seen.isEmpty {
+                ctx.draw(Text("No sung notes here").font(Theme.font(12)).foregroundColor(Theme.textFaint), at: CGPoint(x: size.width / 2, y: size.height / 2))
+                return
+            }
+            seen.sort()
+            var lo = Double(seen[seen.count / 50]), hi = Double(seen[seen.count - 1 - seen.count / 50])
+            if let h = plan.harmony, fx.harmony != .off {
+                let hv = h[first...last].filter { !$0.isNaN }
+                if let a = hv.min(), let b = hv.max() { lo = min(lo, Double(a)); hi = max(hi, Double(b)) }
+            }
+            lo = lo.rounded(.down) - 1; hi = hi.rounded(.up) + 1
+            if hi - lo < 9 { let c = (hi + lo) / 2; lo = c - 4.5; hi = c + 4.5 }
+            let w = size.width - Self.gutter, h = size.height
+            func y(_ m: Double) -> CGFloat { CGFloat(1 - (m - lo) / (hi - lo)) * (h - 12) + 6 }
+            func x(_ t: Double) -> CGFloat { Self.gutter + CGFloat((t - range.lowerBound) / (range.upperBound - range.lowerBound)) * w }
+            // the key's notes
+            let rowGap = (h - 12) / CGFloat(hi - lo)
+            for n in Int(lo.rounded(.up))...Int(hi.rounded(.down)) {
+                let pc = ((n % 12) + 12) % 12
+                guard pcs.contains(pc) else { continue }
+                let yy = y(Double(n))
+                ctx.fill(Path(CGRect(x: Self.gutter, y: yy, width: w, height: pc == root ? 1 : 0.5)),
+                         with: .color(Theme.text.opacity(pc == root ? 0.22 : 0.1)))
+                if rowGap * CGFloat(scale.steps.count == 12 ? 1 : 1.6) >= 9 || pc == root {
+                    ctx.draw(Text(Theory.noteName(midi: n, flat: Theory.flatKeys.contains(root))).font(Theme.font(9.5, pc == root ? .bold : .medium))
+                                .foregroundColor(pc == root ? Theme.textDim : Theme.textFaint),
+                             at: CGPoint(x: Self.gutter - 5, y: yy), anchor: .trailing)
+                }
+            }
+            // cut parts
+            for c in cuts where c.end > range.lowerBound && c.start < range.upperBound {
+                let a = x(max(c.start, range.lowerBound)), b = x(min(c.end, range.upperBound))
+                ctx.fill(Path(CGRect(x: a, y: 0, width: max(1, b - a), height: h)), with: .color(Color(hex: 0xFF4D5E).opacity(0.1)))
+            }
+            let step = max(1, (last - first) / max(1, Int(w * 1.5)))
+            func curve(_ v: [Float]) -> Path {
+                var p = Path()
+                var pen = false
+                for i in stride(from: first, through: last, by: step) {
+                    let m = v[i]
+                    if m.isNaN { pen = false; continue }
+                    let pt = CGPoint(x: x(offset + Double(i) * fs), y: y(Double(m)))
+                    if pen { p.addLine(to: pt) } else { p.move(to: pt); pen = true }
+                }
+                return p
+            }
+            ctx.stroke(curve(plan.input), with: .color(Theme.textDim.opacity(fx.tune ? 0.7 : 1)), lineWidth: 1.5)
+            if let hv = plan.harmony, fx.harmony != .off {
+                ctx.stroke(curve(hv), with: .color(pitchHarmonyColor), style: StrokeStyle(lineWidth: 1.6, dash: [4, 3]))
+            }
+            if fx.tune { ctx.stroke(curve(plan.lead), with: .color(Theme.accent), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round)) }
         }
     }
 }

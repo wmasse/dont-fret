@@ -56,6 +56,9 @@ struct SelfTest {
         if CommandLine.arguments.contains("--lyrics") { lyricsChecks(); return }
         if CommandLine.arguments.contains("--lyrics-bench") { lyricsBench(); return }
         if soundLab(CommandLine.arguments) { return }
+        if CommandLine.arguments.contains("--wrong-strings") { wrongStringChecks(); return }
+        if CommandLine.arguments.contains("--part-strums") { partStrumChecks(); return }
+        if CommandLine.arguments.contains("--versions") { versionsBench(); return }
         var freeOK = 0, verifyOK = 0, total = 0, falseAccept = 0, falseTotal = 0
         var misses: [String] = []
         var byLevel: [Int: (Int, Int)] = [:]
@@ -88,10 +91,13 @@ struct SelfTest {
         print("Free-detection misses: \(misses.joined(separator: ", "))")
         extraChecks()
         transcribeChecks()
+        partStrumChecks()
         synthChecks()
         riffChecks()
         melodyChecks()
         lyricsChecks()
+        strictnessChecks()
+        wrongStringChecks()
     }
 
     static func frame(_ midis: [Int], noise: Float = 0.004, pitch: Bool = false) -> AnalysisFrame {

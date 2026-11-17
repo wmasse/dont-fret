@@ -120,9 +120,15 @@ enum Strictness: String, CaseIterable, Codable, Identifiable {
     case relaxed, normal, strict
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
-    var threshold: Float { [0.66, 0.74, 0.82][index] }
-    var margin: Float { [0.10, 0.05, 0.02][index] }
-    var holdFrames: Int { [2, 2, 3][index] }
+    var threshold: Float { [0.70, 0.76, 0.82][index] }
+    /// How far below the best-fitting other chord the target may score and still pass.
+    var margin: Float { [0.05, 0.03, 0.02][index] }
+    /// Quietest a defining chord tone may be, relative to the loudest note.
+    var minTone: Float { [0.18, 0.25, 0.28][index] }
+    /// Largest share of the sound allowed on notes that aren't in the chord.
+    var maxForeign: Float { [0.42, 0.35, 0.32][index] }
+    /// Analysis frames (~43 ms each) the chord must hold before it counts.
+    var holdFrames: Int { [2, 3, 4][index] }
     var strumWindow: Double { [0.16, 0.12, 0.08][index] }
     private var index: Int { Strictness.allCases.firstIndex(of: self)! }
     var detail: String {
@@ -239,6 +245,10 @@ struct ProgressData: Codable {
     var achievements: [String: Date] = [:]
     var dailyDone: [String] = []
     var loopSpeedUps = 0
+    /// My Songs: ids of the songs the player can play, in their own order.
+    var mySongs: [String] = []
+    /// Songs the player took off My Songs, so finishing them again doesn't put them back.
+    var mySongsRemoved: [String] = []
 }
 
 extension ProgressData {
@@ -248,6 +258,9 @@ extension ProgressData {
         practice = c.v(.practice, [:]); changes = c.v(.changes, [:]); strums = c.v(.strums, [:])
         customSongs = c.v(.customSongs, []); tunerUses = c.v(.tunerUses, 0); achievements = c.v(.achievements, [:])
         dailyDone = c.v(.dailyDone, []); loopSpeedUps = c.v(.loopSpeedUps, 0)
+        mySongsRemoved = c.v(.mySongsRemoved, [])
+        // saves from before My Songs existed start with the songs you added and the ones you've finished
+        mySongs = c.contains(.mySongs) ? c.v(.mySongs, []) : ProgressData.seedMySongs(custom: customSongs, records: songs)
     }
 }
 
@@ -430,10 +443,13 @@ final class ProgressStore {
     func addCustomSong(_ s: Song) {
         data.customSongs.removeAll { $0.id == s.id }
         data.customSongs.append(s)
+        autoAddToMySongs(s.id)
         checkAchievements()
     }
     func deleteCustomSong(_ s: Song) {
         data.customSongs.removeAll { $0.id == s.id }
+        data.mySongs.removeAll { $0 == s.id }
+        data.mySongsRemoved.removeAll { $0 == s.id }
         SongMedia.remove(s.id)
     }
 
@@ -503,6 +519,7 @@ final class ProgressStore {
             if r.history.count > 60 { r.history.removeFirst(r.history.count - 60) }
         }
         data.songs[song.id] = r
+        if mode != .sheet { autoAddToMySongs(song.id) }
         if song.hasRiff && mode != .sheet && stars >= 1 { unlock("riff") }
         if tempo >= 1 && stars >= 2 && mode == .perform { unlock("full-speed") }
         if case .song(let id, let need) = dailyChallenge.kind, id == song.id, stars >= need { completeDaily() }

@@ -47,6 +47,9 @@ struct AddSongView: View {
     @State private var lyricsFound: Lyrics.Lookup?
     /// Where the analysed recording starts in the full track, when the lyrics could be lined up with it.
     @State private var lyricsOffset: Double?
+    /// Which version of the heard chords to build (when there's no chord chart).
+    @State private var level: ChordArranger.Level = .advanced
+    @State private var levelChosen = false
 
     // paste
     @State private var pasted = ""
@@ -316,7 +319,7 @@ struct AddSongView: View {
 
     private func pick(_ t: CatalogTrack) {
         lastTrack = t
-        transcription = nil; failure = nil; step = 0; chartMatch = nil; chartLooked = false
+        transcription = nil; failure = nil; step = 0; chartMatch = nil; chartLooked = false; levelChosen = false
         wholeAudio = nil; wholeFile = nil; wholeError = nil; listener.cancel()
         lyricsFound = nil; lyricsOffset = nil
         guard let p = t.previewUrl.flatMap(URL.init(string:)) else {
@@ -408,6 +411,10 @@ struct AddSongView: View {
     // MARK: review
 
     private func reviewView(_ t: CatalogTrack) -> some View {
+        reviewBody(t).onAppear { if !levelChosen { level = defaultLevel } }
+    }
+
+    private func reviewBody(_ t: CatalogTrack) -> some View {
         Group {
             if let raw = wholeAudio ?? transcription {
                 let tr = effective(raw)
@@ -435,6 +442,7 @@ struct AddSongView: View {
                                 Spacer(minLength: 0)
                             }
                             sourceCard(song)
+                            if wholeAudio != nil || usableChart == nil { levelPicker }
                             if wholeAudio == nil && usableChart == nil { wholeSongPanel(t) }
                             if tr.capo > 0 { capoChoice(tr) }
                             HStack(spacing: 16) {
@@ -581,9 +589,32 @@ struct AddSongView: View {
     }
 
     /// The analysis with the chart's whole-song chords in place, when there's a good chart.
+    /// A good chord chart's whole-song chords as written; otherwise the heard chords, arranged for the chosen version.
     private func effective(_ tr: Transcription) -> Transcription {
-        guard wholeAudio == nil, let m = chartMatch, m.quality != .poor else { return tr }
+        guard wholeAudio == nil, let m = chartMatch, m.quality != .poor else { return ChordArranger.arrange(tr, level: level) }
         return ChordCharts.apply(m, to: tr)
+    }
+
+    /// The version that suits the player's level, until they choose one.
+    private var defaultLevel: ChordArranger.Level {
+        progress.skill.rank <= 1 ? .beginner : (progress.skill.rank <= 2 ? .middle : .advanced)
+    }
+
+    /// Beginner, Middle or Advanced: the same heard song, arranged three ways.
+    private var levelPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CHOOSE YOUR VERSION").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+            HStack(spacing: 10) {
+                ForEach(ChordArranger.Level.allCases) { l in
+                    choice(selected: level == l, title: l.rawValue, detail: l.blurb, icon: l.icon) {
+                        chordPlayer.stop()
+                        level = l
+                        levelChosen = true
+                        useCapo = true
+                    }
+                }
+            }
+        }
     }
 
     private func builtSong(_ t: CatalogTrack, _ raw: Transcription) -> Song {
@@ -599,8 +630,9 @@ struct AddSongView: View {
         let tr = effective(raw)
         if wholeAudio != nil {
             return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
-                                    note: wholeFromFile ? "Chords worked out from the whole song in your audio file. Check them by ear and tap Edit to fix anything."
-                                        : "Chords worked out from the whole song as it played on your Mac. Check them by ear and tap Edit to fix anything.",
+                                    note: (wholeFromFile ? "\(level.rawValue) version, worked out from the whole song in your audio file. "
+                                        : "\(level.rawValue) version, worked out from the whole song as it played on your Mac. ")
+                                        + "Check it by ear and tap Edit to fix anything.",
                                     wholeSong: true)
         }
         if let m = usableChart {
@@ -608,7 +640,8 @@ struct AddSongView: View {
                                     note: "Whole-song chords from a \(m.chart.source) chord chart by its contributors, lined up with the recording's key and tempo. Check them by ear and tap Edit to fix anything.",
                                     wholeSong: true)
         }
-        return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0)
+        return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
+                                note: "\(level.rawValue) version, worked out from the song's 30-second preview. Check it by ear and tap Edit to fix anything.")
     }
 
     /// Where in the full track a recording starts, found by matching the heard voice against the
@@ -828,7 +861,8 @@ struct AddSongView: View {
         wholeFromFile = fromFile
         wholeFile = file
         if transcription == nil { transcription = result }
-        useCapo = result.capo > 0 && progress.skill.rank <= 2
+        if !levelChosen { level = defaultLevel }
+        useCapo = true
         if case .review = phase {} else { phase = .review(t) }
     }
 

@@ -279,6 +279,13 @@ struct SongDetailView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 8) {
+                Button {
+                    if progress.isInMySongs(base.id) { progress.removeFromMySongs(base.id) } else { progress.addToMySongs(base.id) }
+                } label: {
+                    Label(progress.isInMySongs(base.id) ? "In My Songs" : "Add to My Songs", systemImage: progress.isInMySongs(base.id) ? "checkmark" : "plus")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .help(progress.isInMySongs(base.id) ? "Take this song off your My Songs list" : "Put this song on your My Songs list")
                 if base.isCustom {
                     Button { editing = base } label: { Label("Edit", systemImage: "pencil") }.buttonStyle(SecondaryButtonStyle())
                     Button { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }.buttonStyle(SecondaryButtonStyle())

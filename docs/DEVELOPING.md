@@ -42,6 +42,17 @@ Models that views watch use the Observation framework (`@Observable`), so a view
 - Inside an `@Observable` class, state that views don't display (timers, Combine subscriptions, callbacks, DSP buffers) is marked `@ObservationIgnored`. That keeps redraws to what is on screen and keeps observation bookkeeping off the audio thread.
 - Fast-moving values get their own small object, so only the views that move redraw (`PlayClock` for the play screen's playhead).
 
+## App icon
+
+The app icon is drawn by `scripts/make_icon.swift`. To change it, edit that script, then rebuild `Resources/AppIcon.icns` and `docs/icon.png`:
+
+```bash
+mkdir -p /tmp/AppIcon.iconset && swift scripts/make_icon.swift /tmp/icon.png
+for s in 16 32 128 256 512; do sips -z $s $s /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x${s}.png; sips -z $((s*2)) $((s*2)) /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x${s}@2x.png; done
+iconutil -c icns /tmp/AppIcon.iconset -o Resources/AppIcon.icns && sips -z 512 512 /tmp/icon.png --out docs/icon.png
+cp /tmp/AppIcon.iconset/*.png Resources/Assets.xcassets/AppIcon.appiconset/   # the App Store build's icon
+```
+
 ## What's inside
 
 | Area | File |
@@ -80,7 +91,9 @@ Built-in songs use simplified, beginner-friendly progressions and aren't synced 
 2. Beat-by-beat bass and treble pitch profiles go through a chord recognizer that knows the song's key and prefers chord changes on the downbeat.
 3. It finds the repeating progression and suggests the capo position that gives the easiest shapes.
 
-You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording.
+You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording. When the whole song was heard, each part's pattern is detected from its own bars, so a verse and chorus that are strummed differently each keep their pattern (`Tests/TranscribeTest.swift`, `partStrumChecks`).
+
+Everything about a searched song comes from Apple's catalog and from listening on the Mac. The app does not read chords, tabs or lyrics from other websites.
 
 `Sources/App/Analysis/Transcriber.swift` (analysis), `SongFinder.swift` (catalog search, media), `AddSongView.swift` (the flow), `ProgressionPlayer.swift` (playback).
 
@@ -195,7 +208,8 @@ Known gap: attacks are ~1.3× brighter than the recordings relative to their sus
 
 The test synthesizes every chord shape and single note and runs them through the recognizer. Current results:
 - 97% of beginner chords and 87% of all chords are named correctly from scratch.
-- In-game verification accepts 100% of correctly played chords; a wrong chord is accepted 3% of the time.
+- In-game verification (Normal) accepts about 98% of correctly played chords, and every common open chord. A wrong chord is accepted about 1% of the time, room noise or random notes about 1%, just two strings of the chord about 10%, and a chord with one string on the wrong fret about 40% (often that still sounds like the chord).
+- To pass, the sound has to match the chord's template, no other chord can fit better, every tone except the fifth has to be heard, and little sound can sit on notes outside the chord. It also has to hold for 2, 3 or 4 frames (Relaxed, Normal or Strict). The thresholds live on `Strictness` in `Store.swift`, and `Tests/StrictnessTest.swift` reports all three levels.
 - Single notes (riffs): 100% accepted with pitch tracking, 0% wrong notes accepted.
 - Muted-string hints catch 100% of detectable muted strings with no false alarms.
 - Generated voicings, transposing, ChordPro round trip and catalog chords are all checked.

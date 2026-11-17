@@ -193,14 +193,17 @@ struct ChordPopover: View {
             }
             if let shape {
                 HStack(spacing: 8) {
-                    Button { GuitarSynth.shared.strum(shape) } label: { Label("Hear it", systemImage: "speaker.wave.2.fill") }
+                    Button { GuitarSynth.shared.strum(shape) } label: { Label("Hear it", systemImage: "speaker.wave.2.fill").lineLimit(1) }
                         .buttonStyle(PrimaryButtonStyle())
                     Text(shape.levelName)
                         .font(Theme.font(11, .semibold))
+                        .lineLimit(1)
                         .foregroundStyle(Theme.levelColor(shape.level * 2 - 1))
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Capsule().fill(Theme.levelColor(shape.level * 2 - 1).opacity(0.15)))
                 }
+                // keep "Hear it" whole; the popover grows to fit instead of cutting it to "Hea…"
+                .fixedSize()
                 Text(shape.tips)
                     .font(Theme.font(11))
                     .foregroundStyle(Theme.textDim)
