@@ -9,7 +9,13 @@ final class ProgressionPlayer: ObservableObject {
     @Published private(set) var current: Int?
     /// (section index, chord position within that section) of the chord sounding now.
     @Published private(set) var position: (section: Int, token: Int)?
+    /// Play the song's melody (when it has one) on top of the chords.
+    @Published var melodyOn = true
+    /// Index into `song.melody` of the melody note sounding now.
+    @Published private(set) var melodyNote: Int?
     private var task: Task<Void, Never>?
+    private var melodyTask: Task<Void, Never>?
+    private var chordVolume: Float?
 
     func toggle(_ song: Song, tempo: Double = 1, from start: Int = 0) {
         playing ? stop() : play(song, tempo: tempo, from: start)
@@ -26,6 +32,9 @@ final class ProgressionPlayer: ObservableObject {
         let feel = song.playFeel
         let meter = song.beatsPerBar
         playing = true
+        if melodyOn, let melody = song.melody, !melody.isEmpty {
+            playMelody(melody, from: events[min(start, events.count - 1)].start, beat: beat, capo: capo)
+        }
         task = Task { [weak self] in
             let clock = ContinuousClock()
             let t0 = clock.now
@@ -137,17 +146,45 @@ final class ProgressionPlayer: ObservableObject {
         return out
     }
 
+    /// The melody on its own guitar (see `MelodyExtractor.picks` for how each note is played).
+    private func playMelody(_ melody: [MelodyNote], from offset: Double, beat: Double, capo: Int) {
+        let synth = GuitarSynth.melody
+        synth.tone = .acoustic
+        // the tune sits on top: the chords step back a little while it plays
+        chordVolume = GuitarSynth.shared.volume
+        GuitarSynth.shared.volume = (chordVolume ?? 0.9) * 0.6
+        synth.volume = 0.95
+        let picks = MelodyExtractor.picks(melody, from: offset, beat: beat, capo: capo)
+        melodyTask = Task { [weak self] in
+            let clock = ContinuousClock()
+            let t0 = clock.now
+            for p in picks {
+                try? await clock.sleep(until: t0 + .milliseconds(Int(p.at * 1000)))
+                if Task.isCancelled { return }
+                self?.melodyNote = p.index
+                synth.lead(p.string, fret: p.fret, tech: p.tech, length: p.length, velocity: 0.85)
+                if let r = p.release { synth.damp(p.string, after: r) }
+            }
+            self?.melodyNote = nil
+        }
+    }
+
     func stop() {
         if task != nil { GuitarSynth.shared.silence() }
+        if melodyTask != nil { GuitarSynth.melody.silence() }
         task?.cancel()
         task = nil
         finish()
     }
 
     private func finish() {
+        melodyTask?.cancel()
+        melodyTask = nil
+        if let v = chordVolume { GuitarSynth.shared.volume = v; chordVolume = nil }
         playing = false
         current = nil
         position = nil
+        melodyNote = nil
     }
 
     /// The same shape played with a capo: every string sounds `capo` frets higher.

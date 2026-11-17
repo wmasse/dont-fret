@@ -53,7 +53,7 @@ Don't Fret listens to your guitar through the microphone and tells you when you'
 <td width="50%" valign="top">
 
 ### 🔎 Add any song
-Search for any song and Don't Fret finds a chord chart for the **whole song** (verses, choruses, bridge), then listens to the recording to confirm the key, tempo, capo and strumming pattern. No chart? It works the chords out from the song's preview and tells you so. No account or key needed. You can also paste a chord chart or build a song chord by chord.
+Search for any song and Don't Fret finds a chord chart for the **whole song** (verses, choruses, bridge), then listens to the recording to confirm the key, tempo, capo and strumming pattern. No chart? It works the chords out from the song's preview and tells you so. It also picks out the **melody** and plays it on a second guitar over the chords, with string and fret for every note. No account or key needed. You can also paste a chord chart or build a song chord by chord.
 
 </td>
 <td width="50%" valign="top">

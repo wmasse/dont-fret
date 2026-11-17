@@ -33,6 +33,10 @@ struct Transcription {
     var beatPath: [Int] = []
     /// Index of the first downbeat.
     var barPhase = 0
+    /// Where song beat 0 (the first chord of `sections`) falls, as a fractional index into `beatTimes`.
+    var songZeroBeat: Double = 0
+    /// The tune (usually the lead vocal), in seconds of the recording.
+    var heardMelody: [HeardNote] = []
 
     var keyName: String {
         let flat = Theory.flatKeys.contains(minorKey ? (keyRoot + 3) % 12 : keyRoot)
@@ -58,11 +62,17 @@ enum Transcriber {
 
     /// `stage` is called with 1 (beat found), 2 (chords heard) and 3 (done).
     static func analyze(url: URL, stage: ((Int) -> Void)? = nil) throws -> Transcription {
-        let (samples, sr) = try readMono(url)
-        return try analyze(samples: samples, sampleRate: sr, stage: stage)
+        let (samples, side, sr) = try readStereo(url)
+        return try analyze(samples: samples, side: side, sampleRate: sr, stage: stage)
     }
 
     static func readMono(_ url: URL) throws -> ([Float], Double) {
+        let (mono, _, sr) = try readStereo(url)
+        return (mono, sr)
+    }
+
+    /// Mid (L + R) / 2 and, for a stereo file, side (L − R) / 2.
+    static func readStereo(_ url: URL) throws -> (mono: [Float], side: [Float]?, sampleRate: Double) {
         guard let file = try? AVAudioFile(forReading: url) else { throw TranscribeError.unreadable }
         let fmt = file.processingFormat
         let frames = AVAudioFrameCount(file.length)
@@ -74,10 +84,19 @@ enum Transcriber {
         for c in 0..<chans { vDSP_vadd(mono, 1, ch[c], 1, &mono, 1, vDSP_Length(n)) }
         var scale = 1 / Float(max(1, chans))
         vDSP_vsmul(mono, 1, &scale, &mono, 1, vDSP_Length(n))
-        return (mono, fmt.sampleRate)
+        var side: [Float]? = nil
+        if chans >= 2 {
+            var s = [Float](repeating: 0, count: n)
+            vDSP_vsub(ch[1], 1, ch[0], 1, &s, 1, vDSP_Length(n))      // L − R
+            var h: Float = 0.5
+            vDSP_vsmul(s, 1, &h, &s, 1, vDSP_Length(n))
+            side = s
+        }
+        return (mono, side, fmt.sampleRate)
     }
 
-    static func analyze(samples: [Float], sampleRate sr: Double, stage: ((Int) -> Void)? = nil) throws -> Transcription {
+    /// `side` is (L − R) / 2 when the recording is stereo; it helps pick the lead vocal out for the melody.
+    static func analyze(samples: [Float], side: [Float]? = nil, sampleRate sr: Double, stage: ((Int) -> Void)? = nil) throws -> Transcription {
         guard samples.count > Int(sr * 4) else { throw TranscribeError.unreadable }
         var peak: Float = 0
         vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
@@ -207,13 +226,14 @@ enum Transcriber {
             b += meter
         }
         // drop quiet fade-in / fade-out bars
-        while bars.first?.tokens == "?" { bars.removeFirst() }
+        var firstBarBeat = phase
+        while bars.first?.tokens == "?" { bars.removeFirst(); firstBarBeat += meter }
         while bars.last?.tokens == "?" { bars.removeLast() }
         for i in bars.indices where bars[i].tokens == "?" { bars[i].tokens = i > 0 ? bars[i - 1].tokens : "C" }
         guard !bars.isEmpty else { throw TranscribeError.noBeat }
 
         // 7. sections
-        let sections = makeSections(bars.map(\.tokens), keyRoot: keyRoot, minorKey: minorKey, flat: flat)
+        let (sections, startBar) = makeSectionsAndStart(bars.map(\.tokens), keyRoot: keyRoot, minorKey: minorKey, flat: flat)
 
         // 8. easiest capo
         let capo = easiestCapo(Set(sections.flatMap { $0.tokens(beatsPerBar: meter).map(\.chord) }))
@@ -236,6 +256,9 @@ enum Transcriber {
         t.beatRMS = beats.map(\.rms)
         t.beatPath = path
         t.barPhase = phase
+        t.songZeroBeat = Double(firstBarBeat + startBar * meter)
+        // 10. the melody
+        t.heardMelody = MelodyExtractor.extract(mono: samples, side: side, sampleRate: sr, tuning: tuning)
         return t
     }
 
@@ -620,6 +643,12 @@ enum Transcriber {
     // MARK: structure
 
     static func makeSections(_ bars: [String], keyRoot: Int, minorKey: Bool, flat: Bool) -> [SongSection] {
+        makeSectionsAndStart(bars, keyRoot: keyRoot, minorKey: minorKey, flat: flat).sections
+    }
+
+    /// The sections, and which bar of `bars` the first section starts on (a repeating loop is
+    /// rotated to start on the home chord).
+    static func makeSectionsAndStart(_ bars: [String], keyRoot: Int, minorKey: Bool, flat: Bool) -> (sections: [SongSection], startBar: Int) {
         let n = bars.count
         // shortest period that explains most of the bars
         // a whole song can cycle through a longer progression (say a 12- or 16-bar verse and chorus)
@@ -636,13 +665,15 @@ enum Transcriber {
             }
             // start the loop on the home chord if it's in there
             let tonic = chordName(minorKey ? 12 + keyRoot : keyRoot, flatKey: flat)
+            var startBar = 0
             if let i = loop.firstIndex(where: { $0.split(separator: ":").first.map(String.init) == tonic }) {
                 loop = Array(loop[i...] + loop[..<i])
+                startBar = i
             }
             // a 1- or 2-bar loop reads better written out over 4 bars
             while loop.count < 4 && 4 % loop.count == 0 { loop += loop }
             let repeats = max(2, Int((Double(n) / Double(loop.count)).rounded()))
-            return [SongSection(name: "Main progression", chords: loop.joined(separator: " "), repeats: repeats)]
+            return ([SongSection(name: "Main progression", chords: loop.joined(separator: " "), repeats: repeats)], startBar)
         }
         // no clear loop: 4-bar lines, identical neighbours become repeats, identical lines share a name
         func close(_ a: [Substring], _ b: [Substring]) -> Bool { a.count == b.count && a.count >= 4 && zip(a, b).filter { $0 != $1 }.count <= 1 }
@@ -681,7 +712,7 @@ enum Transcriber {
                 out.append(SongSection(name: names[l]!, chords: l))
             }
         }
-        return out
+        return (out, 0)
     }
 
     /// The capo fret (0–5) that turns the chords into the easiest shapes.
@@ -726,10 +757,29 @@ enum Transcriber {
             let passes = Int((60 / s.duration).rounded(.up))
             s.sections = Array(repeating: s.sections, count: passes).flatMap { $0 }
         }
+        s.melody = melody(from: t, song: s, extended: !wholeSong)
         if useCapo > 0 {
             s = s.transposed(by: -useCapo)
             s.capo = useCapo
         }
         return s
+    }
+
+    /// The heard melody on the song's beats. When a short preview's chords were repeated to make the
+    /// song last longer, the melody repeats with them.
+    static func melody(from t: Transcription, song s: Song, extended: Bool) -> [MelodyNote]? {
+        guard !t.heardMelody.isEmpty, t.beatTimes.count >= 2 else { return nil }
+        let length = s.totalBeats
+        // the part of the song the recording covers
+        let heardBeats = MelodyExtractor.beatPosition(t.duration, beatTimes: t.beatTimes) - t.songZeroBeat
+        var notes = MelodyExtractor.place(t.heardMelody, beatTimes: t.beatTimes, zeroBeat: t.songZeroBeat,
+                                          length: min(length, heardBeats), keyRoot: t.keyRoot, minorKey: t.minorKey)
+        if extended, heardBeats < length - 1 {
+            // repeat on whole bars, so the tune stays lined up with the chords
+            let meter = Double(s.beatsPerBar)
+            let period = max(meter, (heardBeats / meter).rounded(.down) * meter)
+            notes = MelodyExtractor.tiled(notes.filter { $0.start < period }, period: period, length: length)
+        }
+        return notes.count >= 4 ? notes : nil
     }
 }
