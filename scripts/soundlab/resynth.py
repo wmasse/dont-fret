@@ -108,17 +108,10 @@ def logmel(x):
     return 10 * np.log10(S @ FB.T + 1e-12), S
 
 
-def align(real, syn, hop=64):
-    """Shifts `syn` to line up with `real`: GuitarSet's annotated onsets sit ~9 ms after the
-    sound reaches the microphone, so the re-synthesis is late by that much."""
-    def flux(x):
-        S = au.stft(x, 512, hop); f = np.fft.rfftfreq(512, 1 / SR); m = (f >= 2000) & (f < 12000)
-        L = np.log1p(1e4 * S[:, m]); d = np.maximum(0, np.diff(L, axis=0)).sum(axis=1)
-        return (d - d.mean()) / (d.std() + 1e-9)
-    a, b = flux(real), flux(syn[:len(real)])
-    k = max(range(-40, 41), key=lambda k: np.dot(a[max(0, k):len(a) + min(0, k)], b[max(0, -k):len(b) - max(0, k)]))
-    shift = -k * hop                                  # samples the synthesis is late
-    return (syn[shift:] if shift > 0 else np.concatenate([np.zeros(-shift), syn])), shift / SR
+def align(real, syn):
+    """GuitarSet's annotated onsets sit ~9 ms after the sound reaches the microphone, so the
+    re-synthesis is late by that much: line it up before comparing."""
+    return au.align(real, syn, SR), None
 
 
 def metrics(real, syn, onsets):

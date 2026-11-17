@@ -181,6 +181,8 @@ Current scores on the 20-clip set (old = the previous Karplus–Strong engine):
 
 Known gap: attacks are ~1.3× brighter than the recordings relative to their sustain.
 
+**Listening test.** Numbers aren't ears, so `scripts/soundlab/listening_test.py` builds a blind, MUSHRA-style test (ITU-R BS.1534) from a `resynth.py --legacy` run: each GuitarSet excerpt four ways (the real recording as a hidden reference, the new engine, the old engine, and the real recording low-passed at 3.5 kHz as the low anchor), plus app demos (new, old, anchor). Every clip in a piece is the same 8 s, lined up note for note and loudness-matched (BS.1770); the professional pieces are mono so the studio recording can't be spotted by its stereo image. It writes AAC clips under unpredictable names and a `manifest.json`. The test runs at [jeremyzay.com/dont-fret/listening-test](https://jeremyzay.com/dont-fret/listening-test) (the `dont_fret` blueprint in Jerenemy/website), where listeners switch between clips in sync and rate each 0–100, and the results are in the site's admin. Build into the website with `--out <website>/app/static/dont-fret/listening-test --key <website>/instance/dont_fret_listening_key.json`; the key says which clip is which, so it never goes into a public repository: copy it to the server's `instance/` folder.
+
 ![Spectrograms of a strummed GuitarSet excerpt: the studio recording (top), the new engine playing the same notes (middle), the previous engine (bottom)](soundlab/spectrogram-real-new-old.jpg)
 
 *8 s of singer-songwriter strumming from GuitarSet (player 03, CC BY 4.0), 40 Hz–16 kHz on a log scale: the U-87 recording (top), the new engine re-synthesizing the same notes (middle), the previous engine (bottom).*

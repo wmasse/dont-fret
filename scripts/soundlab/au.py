@@ -102,3 +102,44 @@ def write_wav(path, x, sr):
     data = (np.clip(x, -1, 1) * 32767).astype('<i2').tobytes()
     hdr = b'RIFF' + struct.pack('<I', 36 + len(data)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, ch, sr, sr * ch * 2, ch * 2, 16)
     open(path, 'wb').write(hdr + b'data' + struct.pack('<I', len(data)) + data)
+
+
+def align(ref, x, sr, hop=64, search=40):
+    """Shifts `x` (mono or stereo) so its onsets line up with mono `ref` (cross-correlated
+    high-frequency spectral flux; GuitarSet's annotations sit ~9 ms after the sound)."""
+    def flux(s):
+        S = stft(s, 512, hop); f = np.fft.rfftfreq(512, 1 / sr); m = (f >= 2000) & (f < 12000)
+        d = np.maximum(0, np.diff(np.log1p(1e4 * S[:, m]), axis=0)).sum(axis=1)
+        return (d - d.mean()) / (d.std() + 1e-9)
+    a, b = flux(ref), flux(mono(x)[:len(ref)])
+    k = max(range(-search, search + 1), key=lambda k: np.dot(a[max(0, k):len(a) + min(0, k)], b[max(0, -k):len(b) - max(0, k)]))
+    shift = -k * hop
+    return x[shift:] if shift > 0 else np.concatenate([np.zeros((-shift,) + x.shape[1:], x.dtype), x])
+
+
+def _biquad(x, b, a):
+    y = np.zeros_like(x); x1 = x2 = y1 = y2 = 0.0
+    for i in range(len(x)):
+        v = b[0] * x[i] + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2
+        x2, x1, y2, y1 = x1, x[i], y1, v; y[i] = v
+    return y
+
+
+def lufs(x, sr):
+    """Integrated loudness, ITU-R BS.1770 (K-weighting, 400 ms blocks, absolute and relative gates)."""
+    import math
+    chans = [x[:, i] for i in range(x.shape[1])] if x.ndim == 2 else [x]
+    A = 10 ** (4 / 40); w = 2 * math.pi * 1681.97 / sr; al = math.sin(w) / 2 * math.sqrt(2); c = math.cos(w); r = 2 * math.sqrt(A) * al
+    a0 = (A + 1) - (A - 1) * c + r
+    b1 = [A * ((A + 1) + (A - 1) * c + r) / a0, -2 * A * ((A - 1) + (A + 1) * c) / a0, A * ((A + 1) + (A - 1) * c - r) / a0]
+    a1 = [1, 2 * ((A - 1) - (A + 1) * c) / a0, ((A + 1) - (A - 1) * c - r) / a0]
+    w = 2 * math.pi * 38.1 / sr; al = math.sin(w); c = math.cos(w); a0 = 1 + al
+    b2 = [(1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0]; a2 = [1, -2 * c / a0, (1 - al) / a0]
+    k = [_biquad(_biquad(np.asarray(ch, dtype=np.float64), b1, a1), b2, a2) for ch in chans]
+    h = int(0.4 * sr); st = int(0.1 * sr); n = max(1, (len(k[0]) - h) // st)
+    z = np.array([sum(np.mean(ch[i * st:i * st + h] ** 2) for ch in k) for i in range(n)])
+    z = z[-0.691 + 10 * np.log10(z + 1e-12) > -70]
+    if not len(z): return -70.0
+    gate = -0.691 + 10 * np.log10(z.mean()) - 10
+    z = z[-0.691 + 10 * np.log10(z) > gate]
+    return float(-0.691 + 10 * np.log10(z.mean()))
