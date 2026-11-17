@@ -34,15 +34,15 @@ struct AddSongView: View {
     @State private var artFile: URL?
     @State private var useCapo = true
     @State private var draft: Song?
-    /// Whole-song chords from a chord chart, lined up with the recording (nil: none found or not looked up).
-    @State private var chartMatch: ChartMatch?
-    @State private var chartLooked = false
     /// Chords worked out from the whole song (listened to while it played, or from an audio file).
     @State private var wholeAudio: Transcription?
     @State private var wholeFromFile = false
     @State private var wholeFile: URL?
     @State private var wholeError: String?
     @StateObject private var listener = WholeSongListener()
+    /// Which version of the heard chords to build.
+    @State private var level: ChordArranger.Level = .advanced
+    @State private var levelChosen = false
 
     // paste
     @State private var pasted = ""
@@ -312,8 +312,8 @@ struct AddSongView: View {
 
     private func pick(_ t: CatalogTrack) {
         lastTrack = t
-        transcription = nil; failure = nil; step = 0; chartMatch = nil; chartLooked = false
-        wholeAudio = nil; wholeFile = nil; wholeError = nil; listener.cancel()
+        transcription = nil; failure = nil; step = 0
+        wholeAudio = nil; wholeFile = nil; wholeError = nil; levelChosen = false; listener.cancel()
         guard let p = t.previewUrl.flatMap(URL.init(string:)) else {
             phase = .paste(t)
             return
@@ -330,15 +330,8 @@ struct AddSongView: View {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try Transcriber.analyze(url: audio) { s in Task { @MainActor in step = 1 + s } }
                 }.value
-                await MainActor.run { step = 4 }
-                // the preview is only 30 s: look for a human-made chart of the whole song and line it up
-                let seconds = t.trackTimeMillis.map { Double($0) / 1000 }
-                let chart = await ChordCharts.find(title: t.trackName, artist: t.artistName)
-                let match = chart.flatMap { ChordCharts.match($0, to: result, trackSeconds: seconds) }
                 await MainActor.run {
                     transcription = result
-                    chartMatch = match
-                    chartLooked = true
                     let used = effective(result)
                     useCapo = used.capo > 0 && progress.skill.rank <= 2
                     step = 5
@@ -373,7 +366,7 @@ struct AddSongView: View {
                     progressRow("Downloading the 30-second preview", done: step >= 1, active: step == 0)
                     progressRow("Finding the beat", done: step >= 2, active: step == 1)
                     progressRow("Listening for the chords", done: step >= 3, active: step == 2)
-                    progressRow("Looking up a chord chart for the whole song", done: step >= 5, active: step == 4)
+                    progressRow("Working out the strumming", done: step >= 5, active: step == 3 || step == 4)
                     progressRow("Choosing the easiest way to play it", done: step >= 5, active: false)
                 }
                 .frame(width: 330)
@@ -398,6 +391,10 @@ struct AddSongView: View {
     // MARK: review
 
     private func reviewView(_ t: CatalogTrack) -> some View {
+        reviewBody(t).onAppear { if !levelChosen { level = defaultLevel } }
+    }
+
+    private func reviewBody(_ t: CatalogTrack) -> some View {
         Group {
             if let raw = wholeAudio ?? transcription {
                 let tr = effective(raw)
@@ -425,7 +422,8 @@ struct AddSongView: View {
                                 Spacer(minLength: 0)
                             }
                             sourceCard(song)
-                            if wholeAudio == nil && usableChart == nil { wholeSongPanel(t) }
+                            levelPicker
+                            if wholeAudio == nil { wholeSongPanel(t) }
                             if tr.capo > 0 { capoChoice(tr) }
                             HStack(spacing: 16) {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -553,37 +551,48 @@ struct AddSongView: View {
         }.joined(separator: " ")
     }
 
-    /// A chart is used only when it really fits the recording.
-    private var usableChart: ChartMatch? {
-        guard let m = chartMatch, m.quality != .poor else { return nil }
-        return m
-    }
-
-    /// The analysis with the chart's whole-song chords in place, when there's a good chart.
+    /// The analysis arranged for the chosen level.
     private func effective(_ tr: Transcription) -> Transcription {
-        guard wholeAudio == nil, let m = chartMatch, m.quality != .poor else { return tr }
-        return ChordCharts.apply(m, to: tr)
+        ChordArranger.arrange(tr, level: level)
     }
 
     private func builtSong(_ t: CatalogTrack, _ raw: Transcription) -> Song {
         let tr = effective(raw)
         if wholeAudio != nil {
             return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
-                                    note: wholeFromFile ? "Chords worked out from the whole song in your audio file. Check them by ear and tap Edit to fix anything."
-                                        : "Chords worked out from the whole song as it played on your Mac. Check them by ear and tap Edit to fix anything.",
+                                    note: (wholeFromFile ? "\(level.rawValue) version, worked out from the whole song in your audio file. "
+                                        : "\(level.rawValue) version, worked out from the whole song as it played on your Mac. ")
+                                        + "Check it by ear and tap Edit to fix anything.",
                                     wholeSong: true)
         }
-        if let m = usableChart {
-            return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
-                                    note: "Whole-song chords from a \(m.chart.source) chord chart by its contributors, lined up with the recording's key and tempo. Check them by ear and tap Edit to fix anything.",
-                                    wholeSong: true)
+        return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
+                                note: "\(level.rawValue) version, worked out from the song's 30-second preview. Check it by ear and tap Edit to fix anything.")
+    }
+
+    /// The version that suits the player's level, until they choose one.
+    private var defaultLevel: ChordArranger.Level {
+        progress.skill.rank <= 1 ? .beginner : (progress.skill.rank <= 2 ? .middle : .advanced)
+    }
+
+    /// Beginner, Middle or Advanced: the same heard song, arranged three ways.
+    private var levelPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CHOOSE YOUR VERSION").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+            HStack(spacing: 10) {
+                ForEach(ChordArranger.Level.allCases) { l in
+                    choice(selected: level == l, title: l.rawValue, detail: l.blurb, icon: l.icon) {
+                        chordPlayer.stop()
+                        level = l
+                        levelChosen = true
+                        useCapo = true
+                    }
+                }
+            }
         }
-        return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0)
     }
 
     /// Where the chords came from, and how much to trust them.
     private func sourceCard(_ song: Song) -> some View {
-        let m = usableChart
         let icon: String
         let tint: Color
         let title: String
@@ -592,18 +601,10 @@ struct AddSongView: View {
             icon = "waveform"; tint = Theme.success
             title = wholeFromFile ? "Whole-song chords from your audio file" : "Whole-song chords from listening"
             detail = "Worked out from the full recording: \(song.sections.count) part\(song.sections.count == 1 ? "" : "s"), \(song.durationText). Listening by ear can miss quick changes — check them and tap Edit to fix anything."
-        } else if let m {
-            icon = "doc.text.magnifyingglass"; tint = m.quality == .high ? Theme.success : Theme.warn
-            title = "Whole-song chords from a chord chart"
-            detail = "From a \(m.chart.source) chart, matched to this recording (fit: \(m.quality.rawValue)). \(song.sections.count) parts, \(song.durationText), in the recording's key."
-                + (m.extended ? " The chart only wrote out part of the song, so its verse and chorus repeat to fill the full length." : "")
         } else {
             icon = "waveform.badge.magnifyingglass"; tint = Theme.accent
             title = "Chords from the 30-second preview"
-            detail = (chartMatch != nil
-                      ? "The chord chart we found doesn't fit this recording, so these chords come from the preview."
-                      : "There's no ready-made chord chart for this song yet, so these chords come from the preview.")
-                + " They're ready to play now, and you can get the whole song in one step below."
+            detail = "A preview is only part of the song. These chords are ready to play now, and you can get the whole song in one step below."
         }
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon).font(.system(size: 18)).foregroundStyle(tint).frame(width: 24)
@@ -612,12 +613,6 @@ struct AddSongView: View {
                 Text(detail).font(Theme.font(12)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            if let m = chartMatch {
-                Button("View Chart") {
-                    if let u = URL(string: "https://www.songsterr.com/a/wsa/song-chords-s\(m.chart.songId)") { NSWorkspace.shared.open(u) }
-                }
-                .buttonStyle(.plain).font(Theme.font(12, .semibold)).foregroundStyle(Theme.accent)
-            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(tint.opacity(0.08)))
@@ -626,7 +621,7 @@ struct AddSongView: View {
 
     // MARK: whole song by ear
 
-    /// Get the whole song when there's no chart: listen while it plays on the Mac, or read an audio file.
+    /// Get the whole song: listen while it plays on the Mac, or read an audio file.
     private func wholeSongPanel(_ t: CatalogTrack) -> some View {
         let trackSeconds = t.trackTimeMillis.map { Double($0) / 1000 }
         return VStack(alignment: .leading, spacing: 12) {
@@ -749,7 +744,8 @@ struct AddSongView: View {
         wholeFromFile = fromFile
         wholeFile = file
         if transcription == nil { transcription = result }
-        useCapo = result.capo > 0 && progress.skill.rank <= 2
+        if !levelChosen { level = defaultLevel }
+        useCapo = true
         if case .review = phase {} else { phase = .review(t) }
     }
 

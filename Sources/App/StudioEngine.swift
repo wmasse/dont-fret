@@ -26,6 +26,8 @@ struct TakeEdit: Codable, Hashable {
     var preset: String = "Natural"
     /// Parts cut out of the middle. They're cut from every track, so layers stay lined up.
     var cuts: [Cut] = []
+    /// Pitch correction, vocal chain, doubling and harmony for the main track.
+    var vocal = VocalFX()
 
     static let spaces: [(String, AVAudioUnitReverbPreset)] = [("Room", .mediumRoom), ("Studio", .smallRoom), ("Hall", .largeHall), ("Plate", .plate), ("Church", .cathedral)]
 
@@ -36,7 +38,9 @@ struct TakeEdit: Codable, Hashable {
         ("Live Room", "music.mic", { $0.bass = 1; $0.treble = 1; $0.reverb = 28; $0.space = 0; $0.compress = true }),
         ("Concert Hall", "building.columns", { $0.bass = 1; $0.treble = 0; $0.reverb = 42; $0.space = 2; $0.compress = false }),
         ("Radio Ready", "dot.radiowaves.left.and.right", { $0.bass = 3; $0.treble = 3; $0.reverb = 12; $0.space = 3; $0.compress = true; $0.normalize = true }),
-        ("Lo-Fi", "cassette", { $0.bass = -5; $0.treble = -10; $0.reverb = 18; $0.space = 1; $0.compress = true })
+        ("Lo-Fi", "cassette", { $0.bass = -5; $0.treble = -10; $0.reverb = 18; $0.space = 1; $0.compress = true }),
+        // the vocal chain (high-pass, de-esser, compressor, presence) does the evening out; the bus adds a plate
+        ("Vocal", "waveform.and.mic", { $0.bass = -1; $0.treble = 1; $0.reverb = 20; $0.space = 3; $0.compress = false })
     ]
 }
 
@@ -47,6 +51,7 @@ extension TakeEdit {
         bass = c.v(.bass, 0); treble = c.v(.treble, 0); reverb = c.v(.reverb, 8); space = c.v(.space, 0)
         compress = c.v(.compress, false); fadeIn = c.v(.fadeIn, 0); fadeOut = c.v(.fadeOut, 0)
         normalize = c.v(.normalize, true); preset = c.v(.preset, "Natural"); cuts = c.v(.cuts, [])
+        vocal = c.v(.vocal, VocalFX())
     }
 }
 
@@ -73,6 +78,8 @@ struct Overdub: Codable, Hashable, Identifiable {
     /// The part of the layer's own recording that's used (seconds into its file).
     var inPoint: Double = 0
     var outPoint: Double? = nil
+    /// Pitch correction, vocal chain, doubling and harmony for this layer.
+    var vocal = VocalFX()
 
     var used: (from: Double, to: Double) { (start + inPoint, start + min(length, outPoint ?? length)) }
 }
@@ -83,6 +90,7 @@ extension Overdub {
         id = c.v(.id, UUID().uuidString); name = c.v(.name, "Layer"); file = c.v(.file, "")
         start = c.v(.start, 0); length = c.v(.length, 0); volume = c.v(.volume, 1); muted = c.v(.muted, false)
         pan = c.v(.pan, 0); inPoint = c.v(.inPoint, 0); outPoint = c.v(.outPoint, nil)
+        vocal = c.v(.vocal, VocalFX())
     }
 }
 
@@ -98,6 +106,8 @@ struct Take: Codable, Hashable, Identifiable {
     var duration: Double
     var edit = TakeEdit()
     var layers: [Overdub] = []
+    /// The song played as a backing while recording (its key is the default for pitch correction).
+    var song: String? = nil
 
     var end: Double { min(duration, edit.trimEnd ?? duration) }
 
@@ -166,7 +176,7 @@ extension Take {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.v(.id, UUID().uuidString); name = c.v(.name, "Take"); created = c.v(.created, Date())
         isVideo = c.v(.isVideo, false); file = c.v(.file, ""); audioFile = c.v(.audioFile, ""); duration = c.v(.duration, 0)
-        edit = c.v(.edit, TakeEdit()); layers = c.v(.layers, [])
+        edit = c.v(.edit, TakeEdit()); layers = c.v(.layers, []); song = c.v(.song, nil)
     }
 }
 
@@ -226,6 +236,7 @@ final class StudioStore: ObservableObject {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         for n in names where n.hasPrefix(t.id + "-layer-") { files.insert(n) }
         for f in files where !f.isEmpty { try? FileManager.default.trashItem(at: url(f), resultingItemURL: nil) }
+        VocalProcessor.forget(Array(files), store: self)
         takes.removeAll { $0.id == t.id }
         save()
     }
@@ -535,11 +546,12 @@ enum StudioMedia {
 
 // MARK: - Mixer graph (shared by live playback and export)
 
-/// Take + layers → tone (EQ) → "even out" compressor → reverb space.
+/// Take + layers → tone (EQ) → "even out" compressor → reverb space. Tracks with vocal tools play their processed
+/// copy, and a layer with the vocal chain on gets its own plate reverb.
 final class StudioGraph {
     let mainFile: AVAudioFile
     let main = AVAudioPlayerNode()
-    var layers: [(node: AVAudioPlayerNode, file: AVAudioFile, dub: Overdub)] = []
+    var layers: [(node: AVAudioPlayerNode, file: AVAudioFile, dub: Overdub, plate: AVAudioUnitReverb)] = []
     let bus = AVAudioMixerNode()
     let eq = AVAudioUnitEQ(numberOfBands: 2)
     let comp = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
@@ -549,15 +561,19 @@ final class StudioGraph {
     private var space = -1
 
     init(engine: AVAudioEngine, take: Take, store: StudioStore, output: AVAudioFormat) throws {
-        mainFile = try AVAudioFile(forReading: store.url(take.audioFile))
+        mainFile = try AVAudioFile(forReading: VocalProcessor.playableURL(take.audioFile, fx: take.edit.vocal, store: store))
         for n in [main, bus, eq, comp, reverb] as [AVAudioNode] { engine.attach(n) }
         engine.connect(main, to: bus, format: mainFile.processingFormat)
         for d in take.layers {
-            guard let f = try? AVAudioFile(forReading: store.url(d.file)) else { continue }
-            let n = AVAudioPlayerNode()
-            engine.attach(n)
-            engine.connect(n, to: bus, format: f.processingFormat)
-            layers.append((n, f, d))
+            guard let f = try? AVAudioFile(forReading: VocalProcessor.playableURL(d.file, fx: d.vocal, store: store)) else { continue }
+            // layer → its own little mixer (so volume and pan still work) → plate → the bus
+            let n = AVAudioPlayerNode(), sub = AVAudioMixerNode(), plate = AVAudioUnitReverb()
+            for x in [n, sub, plate] as [AVAudioNode] { engine.attach(x) }
+            engine.connect(n, to: sub, format: f.processingFormat)
+            engine.connect(sub, to: plate, format: output)
+            engine.connect(plate, to: bus, format: output)
+            plate.loadFactoryPreset(.plate)
+            layers.append((n, f, d, plate))
         }
         engine.connect(bus, to: eq, format: output)
         engine.connect(eq, to: comp, format: output)
@@ -589,6 +605,8 @@ final class StudioGraph {
             let audible = !d.muted && (solo.isEmpty || solo.contains(d.id))
             layers[i].node.volume = audible ? Float(d.volume) : 0
             layers[i].node.pan = Float(max(-1, min(1, d.pan)))
+            layers[i].plate.bypass = !d.vocal.chain
+            layers[i].plate.wetDryMix = 24
         }
     }
 
@@ -602,7 +620,7 @@ final class StudioGraph {
             let into = max(0, skip - out)
             let a = p.from + into, when = out + into - skip
             Self.queue(main, mainFile, from: a, to: p.to, at: when)
-            for (node, file, d) in layers {
+            for (node, file, d, _) in layers {
                 let used = d.used
                 let la = max(a, used.from), lb = min(p.to, used.to)
                 if lb > la { Self.queue(node, file, from: la - d.start, to: lb - d.start, at: when + (la - a)) }
@@ -665,6 +683,8 @@ final class StudioPlayback: ObservableObject {
     private var take: Take?
     private weak var store: StudioStore?
     private var videoKey = ""
+    /// The files the playing graph reads (originals or vocal renders).
+    private var filesKey = ""
 
     init() {
         video.isMuted = true
@@ -730,6 +750,7 @@ final class StudioPlayback: ObservableObject {
             self.engine = engine
             self.graph = g
             self.raw = raw
+            filesKey = VocalProcessor.playableKey(t, store: store)
             startOut = skip
             position = raw ? rawFrom : t.takeTime(skip)
             playing = true
@@ -763,6 +784,12 @@ final class StudioPlayback: ObservableObject {
         graph?.apply(t.edit, layers: t.layers, solo: solo)
     }
 
+    /// A vocal render finished (or was switched off): carry on playing from here with the new sound.
+    func refreshFiles(_ t: Take, store: StudioStore) {
+        guard playing, !raw, VocalProcessor.playableKey(t, store: store) != filesKey else { return }
+        play(t, store: store, from: position, after: 0.03)
+    }
+
     func seek(_ t: Take, store: StudioStore, to s: Double) {
         let wasPlaying = playing && !raw
         position = max(t.edit.trimStart, min(t.end, s))
@@ -794,6 +821,8 @@ enum StudioRenderer {
     static func render(_ t: Take, store: StudioStore, to out: URL, format: Format = .m4a, progress: ((Double) -> Void)? = nil) throws -> Float {
         let sr = 48000.0
         let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
+        // pitch correction and the other vocal tools are rendered first, so the mix plays the processed tracks
+        VocalProcessor.prepare(t, store: store)
         let engine = AVAudioEngine()
         try engine.enableManualRenderingMode(.offline, format: fmt, maximumFrameCount: 4096)
         let g = try StudioGraph(engine: engine, take: t, store: store, output: fmt)

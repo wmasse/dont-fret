@@ -159,6 +159,69 @@ enum StringCheck {
         return checkable(shape).filter { s in frame.energy(Theory.openStrings[s] + shape.frets[s]) < 0.02 }
     }
 
+    /// A string sounding the wrong note: `heard` is the fret it seems to be on.
+    struct WrongString: Equatable { let string: Int; let heard: Int }
+
+    /// Strings fretted a fret or two off (or touched when they should ring open). A string is
+    /// flagged when a clearly heard note sits one or two frets from where that string should be,
+    /// isn't in the chord at all (so another voicing of the same chord never trips it), and
+    /// isn't an overtone of the notes that should be ringing.
+    static func wrongStrings(_ shape: ChordShape, frame: AnalysisFrame, level: Float = 0.3) -> [WrongString] {
+        guard frame.hasSound, !frame.noteEnergy.isEmpty, let sym = shape.symbol else { return [] }
+        let chordPCs = Set(sym.pitchClasses).union(sym.bass.map { [$0] } ?? [])
+        let ringing = (0..<6).filter { shape.frets[$0] >= 0 }
+        let intended = ringing.map { Theory.openStrings[$0] + shape.frets[$0] }
+        let overtones: Set<Int> = [0, 12, 19, 24, 28, 31, 34, 36]
+        // overtones of the shape's notes, and of anything else clearly ringing: another voicing,
+        // or a string left over from the last chord. A wrong fret is a fundamental, not an overtone.
+        let heardTones = frame.noteEnergy.indices.filter { frame.noteEnergy[$0] >= ($0 < 52 ? 0.1 : 0.2) }  // low fundamentals read weak
+        func explained(_ n: Int) -> Bool {
+            intended.contains { overtones.contains(n - $0) } || heardTones.contains { $0 != n && overtones.contains(n - $0) }
+        }
+        // a note's strength, counting its octave too: low fundamentals are weak on a real guitar
+        func strength(_ m: Int) -> Float { max(frame.energy(m), explained(m + 12) ? 0 : frame.energy(m + 12) * 0.8) }
+
+        // a note a muted string could make low on the neck is more likely that string ringing on
+        // from the last chord than a fretted string being off, so it doesn't blame a fretted string
+        let muted = (0..<6).filter { shape.frets[$0] < 0 }.map { Theory.openStrings[$0] }
+        func fromMuted(_ n: Int) -> Bool { muted.contains { (0...5).contains(n - $0) } }
+
+        var found: [(WrongString, Float)] = []
+        for s in ringing {
+            let fret = shape.frets[s], m = Theory.openStrings[s] + fret
+            // when another string's overtone lands on this note, its strength says nothing about this string
+            let masked = intended.contains { $0 != m && overtones.contains(m - $0) && m - $0 > 0 }
+            let expected = masked ? 0 : strength(m)
+            var bestN: (fret: Int, e: Float)? = nil
+            for d in [-2, -1, 1, 2] {
+                let f = fret + d, n = m + d
+                guard f >= 0, f <= 15, !chordPCs.contains(((n % 12) + 12) % 12), !explained(n), !fromMuted(n) else { continue }
+                let e = strength(n)
+                if e >= max(level, expected * 1.5), e > (bestN?.e ?? 0) { bestN = (f, e) }
+            }
+            if let b = bestN { found.append((WrongString(string: s, heard: b.fret), b.e)) }
+        }
+        // one wrong note can sit next to two strings' notes: blame the string whose own note is missing
+        var seen = Set<Int>(), out: [WrongString] = []
+        for (w, _) in found.sorted(by: { $0.1 > $1.1 }) {
+            let n = Theory.openStrings[w.string] + w.heard
+            if seen.insert(n).inserted { out.append(w) }
+        }
+        return out
+    }
+
+    static func wrongHint(_ shape: ChordShape, wrong: [WrongString]) -> String? {
+        guard let w = wrong.first else { return nil }
+        let str = Theory.stringLabels[w.string], fret = shape.frets[w.string]
+        if fret == 0 {
+            return "The \(str) string should ring open, but it sounds fretted. Keep your fingers off it."
+        }
+        let finger = shape.fingers[w.string] > 0 ? "finger \(shape.fingers[w.string])" : "your finger"
+        let way = w.heard > fret ? "too high" : "too low"
+        let off = abs(w.heard - fret) == 1 ? "a fret" : "two frets"
+        return "The \(str) string sounds \(off) \(way). Put \(finger) on fret \(fret)."
+    }
+
     static func hint(_ shape: ChordShape, quiet: [Int]) -> String? {
         guard let s = quiet.first else { return nil }
         let str = Theory.stringLabels[s]

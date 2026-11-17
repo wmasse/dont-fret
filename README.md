@@ -53,7 +53,7 @@ Don't Fret listens to your guitar through the microphone and tells you when you'
 <td width="50%" valign="top">
 
 ### 🔎 Add any song
-Search for any song and Don't Fret finds a chord chart for the **whole song** (verses, choruses, bridge), then listens to the recording to confirm the key, tempo, capo and strumming pattern. No chart? It works the chords out from the song's preview and tells you so. No account or key needed. You can also paste a chord chart or build a song chord by chord.
+Search for any song and Don't Fret listens to it and works out the chords, key, tempo, capo and strumming pattern, in Beginner, Middle and Advanced versions. The 30-second preview gets you playing straight away; for the **whole song** (verses, choruses, bridge), let the app listen while the song plays on your Mac, or give it an audio file. No account or key needed. You can also paste a chord chart or build a song chord by chord.
 
 </td>
 <td width="50%" valign="top">
@@ -123,13 +123,13 @@ Record yourself playing, as audio only or as video with sound (any camera, inclu
 
 ## Adding songs
 
-**Songs → Add Any Song** (⌘N): type a song title or artist. The app finds it in Apple's public music catalog and downloads the 30-second preview. Because a preview is only part of the song, it also looks up a human-made chord chart on Songsterr and lines it up with the recording: the fit picks the real key (even for charts written for a capo), the tempo comes from the recording, and every verse, chorus and bridge is laid out to the song's real length. Only chord names are kept, never lyrics. If there's no chart, or the chart doesn't match the recording, you get the preview's chords straight away, and the review screen offers the whole song in one step: **Listen While It Plays** (play the song in Spotify, Music or YouTube and Don't Fret listens to your Mac's sound, then stops by itself at the end) or **Choose Audio File…**. Listening needs macOS 14.2 or later and a one-time permission in System Settings → Privacy & Security → Screen & System Audio Recording. The audio is only analysed in memory and never saved. Protected files from streaming apps can't be read; use Listen While It Plays for those.
+**Songs → Add Any Song** (⌘N): type a song title or artist. The app finds it in Apple's public music catalog, downloads the 30-second preview and listens to it: it finds the beat, the key, the chords and the strumming, then offers Beginner, Middle and Advanced versions. A preview is only part of the song, so the review screen offers the whole song in one step: **Listen While It Plays** (play the song in Spotify, Music or YouTube and Don't Fret listens to your Mac's sound, then stops by itself at the end) or **Choose Audio File…**. From a whole song the app also works out each part's own strumming, so a quiet verse and a busy chorus each get their pattern. Listening needs macOS 14.2 or later and a one-time permission in System Settings → Privacy & Security → Screen & System Audio Recording. The audio is only analysed in memory and never saved. Protected files from streaming apps can't be read; use Listen While It Plays for those. Everything is worked out by ear on your Mac, so check it against the song and tap Edit to fix anything.
 
 Listen along with the chords lighting up, fix anything in the visual editor, or paste a chord chart from any website instead. You can also import ChordPro (`.cho`) or plain-text charts.
 
 ## Privacy
 
-Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. Studio recordings are saved in the `Studio` folder there and never leave your Mac unless you export them. The app only goes online to fetch album covers for the built-in songs from Apple's public music catalog, and when you search for a song to add (Apple's catalog for the preview, Songsterr for a chord chart). No personal information is sent.
+Everything stays on your Mac. There's no account, no tracking and no ads. Your progress is saved in `~/Library/Application Support/DontFret/`, and **Settings → Back Up** saves it to a file you can move to another Mac. Studio recordings are saved in the `Studio` folder there and never leave your Mac unless you export them. The app only goes online to fetch album covers for the built-in songs from Apple's public music catalog, and when you search for a song to add (Apple's catalog, for the song's details and its preview). No personal information is sent.
 
 ## Build it yourself
 

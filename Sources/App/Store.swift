@@ -245,6 +245,10 @@ struct ProgressData: Codable {
     var achievements: [String: Date] = [:]
     var dailyDone: [String] = []
     var loopSpeedUps = 0
+    /// My Songs: ids of the songs the player can play, in their own order.
+    var mySongs: [String] = []
+    /// Songs the player took off My Songs, so finishing them again doesn't put them back.
+    var mySongsRemoved: [String] = []
 }
 
 extension ProgressData {
@@ -254,6 +258,9 @@ extension ProgressData {
         practice = c.v(.practice, [:]); changes = c.v(.changes, [:]); strums = c.v(.strums, [:])
         customSongs = c.v(.customSongs, []); tunerUses = c.v(.tunerUses, 0); achievements = c.v(.achievements, [:])
         dailyDone = c.v(.dailyDone, []); loopSpeedUps = c.v(.loopSpeedUps, 0)
+        mySongsRemoved = c.v(.mySongsRemoved, [])
+        // saves from before My Songs existed start with the songs you added and the ones you've finished
+        mySongs = c.contains(.mySongs) ? c.v(.mySongs, []) : ProgressData.seedMySongs(custom: customSongs, records: songs)
     }
 }
 
@@ -435,10 +442,13 @@ final class ProgressStore: ObservableObject {
     func addCustomSong(_ s: Song) {
         data.customSongs.removeAll { $0.id == s.id }
         data.customSongs.append(s)
+        autoAddToMySongs(s.id)
         checkAchievements()
     }
     func deleteCustomSong(_ s: Song) {
         data.customSongs.removeAll { $0.id == s.id }
+        data.mySongs.removeAll { $0 == s.id }
+        data.mySongsRemoved.removeAll { $0 == s.id }
         SongMedia.remove(s.id)
     }
 
@@ -508,6 +518,7 @@ final class ProgressStore: ObservableObject {
             if r.history.count > 60 { r.history.removeFirst(r.history.count - 60) }
         }
         data.songs[song.id] = r
+        if mode != .sheet { autoAddToMySongs(song.id) }
         if song.hasRiff && mode != .sheet && stars >= 1 { unlock("riff") }
         if tempo >= 1 && stars >= 2 && mode == .perform { unlock("full-speed") }
         if case .song(let id, let need) = dailyChallenge.kind, id == song.id, stars >= need { completeDaily() }

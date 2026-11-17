@@ -15,6 +15,14 @@ To make a downloadable release (universal Apple Silicon + Intel app in a DMG):
 scripts/release.sh 1.1
 ```
 
+The app icon is drawn by `scripts/make_icon.swift`. To change it, edit that script, then rebuild `Resources/AppIcon.icns` and `docs/icon.png`:
+
+```bash
+mkdir -p /tmp/AppIcon.iconset && swift scripts/make_icon.swift /tmp/icon.png
+for s in 16 32 128 256 512; do sips -z $s $s /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x${s}.png; sips -z $((s*2)) $((s*2)) /tmp/icon.png --out /tmp/AppIcon.iconset/icon_${s}x${s}@2x.png; done
+iconutil -c icns /tmp/AppIcon.iconset -o Resources/AppIcon.icns && sips -z 512 512 /tmp/icon.png --out docs/icon.png
+```
+
 ## What's inside
 
 | Area | File |
@@ -47,7 +55,9 @@ Built-in songs use simplified, beginner-friendly progressions and aren't synced 
 2. Beat-by-beat bass and treble pitch profiles go through a chord recognizer that knows the song's key and prefers chord changes on the downbeat.
 3. It finds the repeating progression and suggests the capo position that gives the easiest shapes.
 
-You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording.
+You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording. When the whole song was heard, each part's pattern is detected from its own bars, so a verse and chorus that are strummed differently each keep their pattern (`Tests/TranscribeTest.swift`, `partStrumChecks`).
+
+Everything about a searched song comes from Apple's catalog and from listening on the Mac. The app does not read chords, tabs or lyrics from other websites.
 
 `Sources/App/Transcriber.swift` (analysis), `SongFinder.swift` (catalog search, media), `AddSongView.swift` (the flow), `ProgressionPlayer.swift` (playback).
 

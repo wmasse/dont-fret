@@ -6,7 +6,8 @@ import Foundation
 extension SelfTest {
     struct Case { var chords: [String]; var bpm: Double; var meter: Int = 4; var key: String; var strum: String = "DUDUDUDU" }
 
-    static func renderMix(_ c: Case, seconds: Double = 30) -> [Float] {
+    /// `plan` lays out a whole song: parts (chords, strum, bars) played in order, instead of one loop.
+    static func renderMix(_ c: Case, seconds: Double = 30, plan: [(chords: [String], strum: String, bars: Int)] = []) -> [Float] {
         let total = Int(sr * seconds)
         var out = [Float](repeating: 0, count: total)
         let beat = 60 / c.bpm
@@ -49,14 +50,21 @@ extension SelfTest {
             let n = parts.count > 1 ? Int(parts[1])! : c.meter
             beats += Array(repeating: String(parts[0]), count: n)
         }
+        var planChords: [String] = [], planStrums: [String] = []
+        for part in plan {
+            for k in 0..<(part.bars * c.meter) {
+                planChords.append(part.chords[(k / c.meter) % part.chords.count])
+                planStrums.append(part.strum)
+            }
+        }
         var t = 0.0, i = 0
         while t < seconds - beat {
-            let name = beats[i % beats.count]
+            let name = plan.isEmpty ? beats[i % beats.count] : planChords[i % planChords.count]
             let sym = ChordSymbol.parse(name)!
             let shape = ChordLibrary.shape(for: name)!
             let pos = i % c.meter
             // guitar: follow the strum pattern (two slots per beat)
-            let pat = Array(c.strum)
+            let pat = Array(plan.isEmpty ? c.strum : planStrums[i % planStrums.count])
             for half in 0..<2 {
                 let ch = pat[(pos * 2 + half) % pat.count]
                 let at = t + Double(half) * beat / 2
@@ -137,6 +145,48 @@ extension SelfTest {
         guard let pc = Theory.pitchClass(of: String(key.split(separator: " ")[0])) else { return "" }
         let r = (pc + 3) % 12
         return Theory.name(r, flat: Theory.flatKeys.contains(r)) + " major"
+    }
+}
+
+extension SelfTest {
+    /// Whole songs whose verse and chorus are strummed differently: each part should get its own pattern.
+    static func partStrumChecks() {
+        func pct(_ a: Int, _ b: Int) -> String { String(format: "%.0f%%", 100 * Double(a) / Double(max(1, b))) }
+        let verse = ["G", "D", "Em", "C", "G", "D", "C", "D"], chorus = ["C", "G", "Am", "F", "C", "G", "F", "G"]
+        let songs: [(String, String, Double)] = [("D-D-D-D-", "DUDUDUDU", 112), ("D---D-DU", "DUDUDUDU", 96), ("D-DU-UDU", "D-DUDUDU", 120),
+                                                 ("D-D-D-D-", "D-DU-UDU", 104), ("D-DU-UDU", "D-DU-UDU", 116), ("DUDUDUDU", "DUDUDUDU", 100)]
+        var right = 0, total = 0, splitWhenSame = 0, same = 0
+        Transcriber.debugRhythm = CommandLine.arguments.contains("--verbose")
+        defer { Transcriber.debugRhythm = false }
+        var lines: [String] = []
+        for (vs, cs, bpm) in songs {
+            let order = [0, 0, 1, 0, 1, 1, 0, 1]
+            let plan = order.map { $0 == 0 ? (chords: verse, strum: vs, bars: 8) : (chords: chorus, strum: cs, bars: 8) }
+            let barSeconds = 4 * 60 / bpm
+            let seconds = Double(order.count * 8) * barSeconds
+            let c = Case(chords: verse, bpm: bpm, key: "G major", strum: vs)
+            guard let t = try? Transcriber.analyze(samples: renderMix(c, seconds: seconds, plan: plan), sampleRate: sr) else { lines.append("\(vs) / \(cs): failed"); continue }
+            // walk the bars part by part, as the song will be played
+            var k = 0, ok = 0, n = 0
+            var used = Set<String>()
+            for sec in t.sections {
+                let perPass = Int((sec.tokens(beatsPerBar: t.beatsPerBar).reduce(0) { $0 + $1.beats } / Double(t.beatsPerBar)).rounded())
+                for _ in 0..<(perPass * max(1, sec.repeats)) where k < t.bars.count {
+                    let mid = (t.bars[k].start + t.bars[k].end) / 2
+                    let part = order[min(order.count - 1, Int(mid / (8 * barSeconds)))]
+                    let p = sec.strum ?? t.strum
+                    used.insert(p)
+                    if p == (part == 0 ? vs : cs) { ok += 1 }
+                    n += 1; k += 1
+                }
+            }
+            right += ok; total += n
+            if vs == cs { same += 1; if used.count > 1 { splitWhenSame += 1 } }
+            lines.append("verse \(vs) chorus \(cs) @\(Int(bpm)) → main \(t.strum), parts \(t.sections.map { "\($0.name):\($0.strum ?? "main")" }.joined(separator: " ")) (\(pct(ok, n)) of bars right)")
+        }
+        print("\nStrumming by part (6 whole songs, verse and chorus strummed differently in 4):")
+        print("   bars given the right pattern: \(pct(right, total))   same-strum songs wrongly split: \(splitWhenSame)/\(same)")
+        for l in lines { print("   " + l) }
     }
 }
 #endif

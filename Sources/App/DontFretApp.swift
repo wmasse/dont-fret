@@ -38,12 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
-    case home, songs, studio, riffs, chords, strum, trainer, changes, tuner, progress, settings
+    case home, songs, library, studio, riffs, chords, strum, trainer, changes, tuner, progress, settings
     var id: String { rawValue }
     var title: String {
         switch self {
         case .home: return "Home"
         case .songs: return "Songs"
+        case .library: return "My Songs"
         case .riffs: return "Riffs & Solos"
         case .studio: return "Studio"
         case .chords: return "Chord Library"
@@ -59,6 +60,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .home: return "house.fill"
         case .songs: return "music.note.list"
+        case .library: return "heart.fill"
         case .riffs: return "bolt.horizontal.fill"
         case .studio: return "record.circle"
         case .chords: return "square.grid.3x3.fill"
@@ -123,6 +125,7 @@ final class AppState: ObservableObject {
     @Published var strumChordPreset: String? = nil
     @Published var changesPreset: (String, String)? = nil
     @Published var songPath: [Song] = []
+    @Published var libraryPath: [Song] = []
     @Published var inputMode: InputMode = .mic
     // onboarding draft
     @Published var obStep = 0
@@ -137,6 +140,8 @@ final class AppState: ObservableObject {
     }
 
     func openSong(_ song: Song) {
+        // a song opened from My Songs stays in My Songs
+        if selection == .library { libraryPath = [song]; return }
         selection = .songs
         songPath = [song]
     }
