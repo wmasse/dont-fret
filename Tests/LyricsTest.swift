@@ -81,6 +81,7 @@ extension SelfTest {
         var found = 0, trusted = 0
         var wordTrusted = 0, wordMismatch = 0, bothTrusted = 0, bothAgree = 0
         var wordOffset: [String: Double] = [:]
+        var recallHave = 0, recallWant = 0, recallExtra = 0, recallHeard = 0
         var heardBySong: [(title: String, words: [HeardWord], duration: Double, seconds: Double)] = []
         var linesBySong: [[TimedLyric]] = []
         for b in benchSongs {
@@ -116,7 +117,28 @@ extension SelfTest {
             heardBySong.append((b.title, words, tr.duration, seconds)); linesBySong.append(lines)
             let wa = Lyrics.alignWords(lines, heard: words, recordingSeconds: tr.duration, range: 0...max(0, seconds - tr.duration))
             if let wa {
-                if wa.trustworthy { wordTrusted += 1; wordOffset[b.title] = wa.offset }
+                if wa.trustworthy {
+                    wordTrusted += 1; wordOffset[b.title] = wa.offset
+                    // lyrics from listening alone: how many of the real words, line by line, the recogniser wrote down
+                    var have = 0, want = 0, extra = 0
+                    var usedWords = Set<Int>()
+                    for (i, l) in lines.enumerated() where !l.text.isEmpty {
+                        let a = l.time - wa.offset, e = a + Lyrics.singingLength(lines, i)
+                        guard a >= 0.5, e <= tr.duration - 0.5 else { continue }
+                        let keys = l.text.split(whereSeparator: { $0.isWhitespace || $0 == "-" }).map { Lyrics.wordKey($0) }.filter { !$0.isEmpty }
+                        want += keys.count
+                        var pool = words.indices.filter { !usedWords.contains($0) && words[$0].time >= a - 0.8 && words[$0].time <= e + 0.8 }
+                        for k in keys {
+                            if let j = pool.firstIndex(where: { Lyrics.wordKey(words[$0].text) == k }) { have += 1; usedWords.insert(pool[j]); pool.remove(at: j) }
+                        }
+                    }
+                    extra = words.indices.filter { !usedWords.contains($0) && !["oh", "ooh", "yeah", "ah"].contains(Lyrics.wordKey(words[$0].text)) }.count
+                    if want > 0 {
+                        recallHave += have; recallWant += want; recallExtra += extra; recallHeard += words.count
+                        print(String(format: "   from listening alone: %d of %d lyric words written down (%.0f%%), %d heard words not in the lyrics", have, want, 100 * Double(have) / Double(want), extra))
+                        print("      heard: " + String(words.map(\.text).joined(separator: " ").prefix(160)))
+                    }
+                }
                 if wa.mismatch { wordMismatch += 1 }
                 // check by eye: a few heard words next to the lyric line the track has at that moment
                 let sample = words.filter { Lyrics.wordKey($0.text).count >= 4 }.prefix(3).map { w -> String in
@@ -173,6 +195,7 @@ extension SelfTest {
                          inside.first?.text ?? ""))
         }
         print("\nSynced lyrics for \(found)/\(benchSongs.count) songs; lined up confidently \(trusted)/\(found)")
+        print(String(format: "Lyrics from listening alone (songs lined up): %d of %d lyric words written down (%.0f%%); %d of %d heard words weren't in the lyrics", recallHave, recallWant, 100 * Double(recallHave) / Double(max(1, recallWant)), recallExtra, recallHeard))
         print("By the sung words: lined up confidently \(wordTrusted)/\(found); same place as the voice-timing match \(bothAgree)/\(bothTrusted) where both were sure")
         // another song's lyrics must never be lined up (that would show the wrong words)
         var wrongTrusted: [String] = [], wrongFlagged = 0
