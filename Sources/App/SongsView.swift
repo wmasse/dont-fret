@@ -216,9 +216,14 @@ struct SongDetailView: View {
             }
             tricksCard(s)
             if let r = progress.data.songs[base.id], r.history.count >= 2 { historyCard(r) }
+            if let l = s.lyrics, !l.isEmpty { LyricsCard(player: hear, song: s, tempo: tempo) }
             if let m = s.melody, !m.isEmpty { MelodyCard(player: hear, song: s, tempo: tempo) }
             structureCard(s)
         }
+        .overlay(alignment: .bottom) {
+            if let l = s.lyrics, !l.isEmpty { KaraokeBar(player: hear, lines: l) }
+        }
+        .animation(.easeOut(duration: 0.25), value: hear.playing)
         .onAppear {
             guard !didInit else { return }
             didInit = true
@@ -777,7 +782,7 @@ struct SongEditorView: View {
     private var canSave: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty && !sections.isEmpty && unknown.isEmpty }
     private var preview: Song {
         Song(id: existing?.id ?? "preview", title: title, artist: artist, genre: genre, bpm: bpm, beatsPerBar: beats, capo: capo, strum: pattern, sections: sections,
-             feel: feel.isEmpty ? nil : feel, melody: existing?.melody)
+             feel: feel.isEmpty ? nil : feel, melody: existing?.melody, lyrics: existing?.lyrics)
     }
 
     var body: some View {
@@ -999,7 +1004,7 @@ struct SongEditorView: View {
                         artist: artist.trimmingCharacters(in: .whitespaces).isEmpty ? "Me" : artist.trimmingCharacters(in: .whitespaces),
                         genre: genre, bpm: bpm, beatsPerBar: beats, capo: capo, strum: pattern,
                         sections: sections, isCustom: true, note: existing?.note, feel: feel.isEmpty ? nil : feel,
-                        melody: existing?.melody)
+                        melody: existing?.melody, lyrics: existing?.lyrics)
         if let onDone { onDone(song) } else { progress.addCustomSong(song); dismiss() }
     }
 }

@@ -623,6 +623,11 @@ struct HighwayModeView: View {
             }
             .frame(maxHeight: .infinity)
 
+            if let l = engine.song.lyrics, !l.isEmpty {
+                GameKaraoke(clock: engine.clock, lines: l, size: 26)
+                    .padding(.horizontal, 30)
+            }
+
             HStack(spacing: 28) {
                 if engine.current?.isNote == true {
                     HStack(spacing: 8) {
@@ -951,6 +956,13 @@ struct SheetModeView: View {
         .padding(.bottom, 24)
     }
 
+    /// The lyrics that start during this chord, like the words under a chord sheet.
+    private func words(in e: ChordEvent) -> String? {
+        guard let lines = engine.song.lyrics else { return nil }
+        let w = lines.filter { $0.start >= e.start && $0.start < e.end && !$0.text.isEmpty }.map(\.text)
+        return w.isEmpty ? nil : w.joined(separator: " / ")
+    }
+
     private func barCell(_ e: ChordEvent) -> some View {
         let isCurrent = e.id == engine.index && !engine.countingIn
         let past = e.id < engine.index
@@ -970,6 +982,11 @@ struct SheetModeView: View {
                 }
             }
             BarProgress(clock: engine.clock, event: e, isCurrent: isCurrent, past: past)
+            if let words = words(in: e) {
+                Text(words).font(Theme.font(12, isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Theme.text : Theme.textDim)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
@@ -1002,6 +1019,11 @@ struct SheetModeView: View {
                 }
             }
             .card(padding: 18, radius: 20)
+
+            if let l = engine.song.lyrics, !l.isEmpty {
+                GameKaraoke(clock: engine.clock, lines: l, size: 17)
+                    .card(padding: 14, radius: 20)
+            }
 
             if engine.current?.isNote != true {
                 VStack(alignment: .leading, spacing: 10) {
