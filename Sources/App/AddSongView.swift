@@ -441,6 +441,16 @@ struct AddSongView: View {
                             }
                             .padding(14)
                             .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface2))
+                            if let m = song.melody, !m.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("MELODY HEARD").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+                                        Text("\(m.count) notes\(wholeAudio == nil && usableChart == nil ? " · repeats with the preview's chords" : "")")
+                                            .font(Theme.font(11)).foregroundStyle(Theme.textDim)
+                                    }
+                                    MelodyStrip(song: song, melody: m, current: chordPlayer.playing ? chordPlayer.melodyNote : nil, height: 96)
+                                }
+                            }
                             listenCard(tr, song)
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("CHORDS").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)

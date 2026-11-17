@@ -31,6 +31,7 @@ scripts/release.sh 1.1
 | Play Along / Wait Mode / Auto-Scroll sheet, section loops with auto speed-up | `Sources/App/Game.swift` |
 | Chord Trainer (spaced review), 1-Minute Changes, Strum Trainer | `Sources/App/Practice.swift` |
 | Song library, song page (key & capo, tricky changes, history), song editor | `Sources/App/SongsView.swift` |
+| Melody from a recording: pitch tracking, notes on the song's beats, fret positions, the melody strip | `Sources/App/Melody.swift`, `MelodyView.swift` |
 | Mic calibration, timing calibration, backup & restore | `Sources/App/Calibration.swift` |
 | Tuner, progress, achievements | `Sources/App/TunerView.swift` |
 | Progress, XP, skill levels, learning paths, achievements, daily challenge | `Sources/App/Store.swift` |
@@ -50,6 +51,18 @@ Built-in songs use simplified, beginner-friendly progressions and aren't synced 
 You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording.
 
 `Sources/App/Transcriber.swift` (analysis), `SongFinder.swift` (catalog search, media), `AddSongView.swift` (the flow), `ProgressionPlayer.swift` (playback).
+
+### Melody
+
+Every analysis also picks out the song's tune, usually the lead vocal (`MelodyExtractor` in `Sources/App/Melody.swift`):
+
+1. A 46 ms spectrum every 10 ms. For stereo audio (previews, audio files and the whole-song listen all keep a side channel), each bin is weighted by how centred it is in the stereo picture, `(|M|² − |S|²) / (|M|² + |S|²)`, because lead vocals are usually mixed in the middle.
+2. Harmonic-sum pitch salience over G2–D6 in fifth-of-a-semitone steps, favouring a singer's range and pitches whose own fundamental is present.
+3. A Viterbi path through the salience with a voiced/unvoiced state: moving pitch costs in proportion to the size of the move, so it follows one voice.
+4. Notes: steady pitches, split where the voice dips for a new syllable. Weak notes whose pitch doesn't move at all are dropped (singers wobble; strummed accompaniment doesn't), and a note moves down an octave when the octave below explains the sound almost as well.
+5. `Transcription.songZeroBeat` says which beat of the recording is song beat 0 (the first bar, the bar a repeating loop was rotated to, or minus the chart offset for a matched chord chart), so `MelodyExtractor.place` can snap notes onto the song's own beat grid (16ths). A short preview's melody repeats with its chords.
+
+The melody is stored on the song (`Song.melody`, relative to the capo like single-note tokens) and follows transposing and capo changes. `ProgressionPlayer` plays it on a second instance of the guitar (`GuitarSynth.melody`) so the tune doesn't cut off the chord's strings; `MelodyExtractor.picks` chooses where to fret each note (a small Viterbi over string/fret choices), hammer-ons and pull-offs for notes that carry straight on along a string, and vibrato on long notes. The song page shows it as a scrolling strip with string and fret labels that follows playback.
 
 You can also build a song chord by chord, import ChordPro `.cho` / plain-text charts, or add a line to `SongCatalog.songs` in `Songs.swift`:
 
@@ -94,5 +107,6 @@ The test synthesizes every chord shape and single note and runs them through the
 - Generated voicings, transposing, ChordPro round trip and catalog chords are all checked.
 
 - Automatic chords from a full band mix (10 synthesized songs with guitar, bass, drums and melody): tempo, key and time signature 100%, bars 92%, whole progression 100%.
+- Melody from a full band mix (8 synthesized 40 s songs with a sung-style lead over wide strummed guitars, bass and drums; `build/selftest --melody`): pitch right about 90% of the time the voice sings, notes about 70% F-measure (right pitch, onset within 100 ms), about 67% placed on the right beat. A quiet voice under loud guitars is the hard case (40–60%).
 
 These numbers come from synthesized sound. A real guitar in a real room will differ, so run **Settings → Microphone & timing → Calibrate** first.

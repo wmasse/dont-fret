@@ -164,6 +164,8 @@ struct Song: Identifiable, Codable, Hashable {
     var note: String? = nil
     /// How the backing guitar plays it: "strum", "boomchick", "picked", "power" or "reggae". nil = work it out.
     var feel: String? = nil
+    /// The tune, worked out from the recording (searched songs). Plays along with the chords.
+    var melody: [MelodyNote]? = nil
 
     static let feelNames: [(String, String)] = [("strum", "Strummed"), ("boomchick", "Bass note + strum"), ("picked", "Fingerpicked"),
                                                 ("power", "Power chords"), ("reggae", "Reggae chops")]
@@ -284,6 +286,7 @@ struct Song: Identifiable, Codable, Hashable {
             }.joined(separator: " ")
             return out
         }
+        s.melody = melody?.map { var n = $0; n.midi += semis; return n }
         return s
     }
 
@@ -318,6 +321,7 @@ extension Song {
         isCustom = c.v(.isCustom, true)
         note = c.v(.note, nil)
         feel = c.v(.feel, nil)
+        melody = c.v(.melody, nil)
     }
 }
 

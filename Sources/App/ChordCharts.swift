@@ -548,6 +548,8 @@ enum ChordCharts {
         if !m.previewBars.isEmpty { t.bars = m.previewBars }
         t.keyRoot = m.keyRoot
         t.minorKey = m.minorKey
+        // the preview's beat i is the chart's beat (offset + i)
+        t.songZeroBeat = -Double(m.offset)
         t.capo = Transcriber.easiestCapo(Set(m.sections.flatMap { $0.tokens(beatsPerBar: tr.beatsPerBar).map(\.chord) }))
         t.confidence = m.quality == .high ? 0.8 : 0.55
         return t

@@ -357,6 +357,8 @@ final class GuitarCore {
 
 final class GuitarSynth {
     static let shared = GuitarSynth()
+    /// A second guitar for a song's melody, so the tune doesn't cut off the strings of the chords.
+    static let melody = GuitarSynth()
     private let engine = AVAudioEngine()
     private let clickPlayer = AVAudioPlayerNode()
     private let sr: Double = 44100

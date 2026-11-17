@@ -51,6 +51,7 @@ struct SelfTest {
     static func main() {
         if CommandLine.arguments.contains("--chart-bench") { chartBench(); return }
         if CommandLine.arguments.contains("--whole-bench") { wholeBench(); return }
+        if CommandLine.arguments.contains("--melody") { melodyChecks(); return }
         var freeOK = 0, verifyOK = 0, total = 0, falseAccept = 0, falseTotal = 0
         var misses: [String] = []
         var byLevel: [Int: (Int, Int)] = [:]
@@ -85,6 +86,7 @@ struct SelfTest {
         transcribeChecks()
         synthChecks()
         riffChecks()
+        melodyChecks()
     }
 
     static func frame(_ midis: [Int], noise: Float = 0.004, pitch: Bool = false) -> AnalysisFrame {

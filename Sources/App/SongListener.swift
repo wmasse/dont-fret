@@ -27,6 +27,8 @@ final class SystemAudioTap {
     private let queue = DispatchQueue(label: "app.dontfret.listen", qos: .userInitiated)
     private let lock = NSLock()
     private var samples: [Float] = []
+    /// (L − R) / 2, kept so the melody finder can tell the centre (lead vocal) from the sides.
+    private var side: [Float] = []
     private var lastRMS: Float = 0
     private(set) var sampleRate: Double = 48000
 
@@ -54,6 +56,7 @@ final class SystemAudioTap {
         let interleaved = fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
         // room for about seven minutes up front, so the audio thread rarely has to grow the buffer
         samples.reserveCapacity(Int(sampleRate * 420))
+        if channels >= 2 { side.reserveCapacity(Int(sampleRate * 420)) }
 
         // 3. a private aggregate device that carries the tap
         var dict: [String: Any] = [
@@ -76,6 +79,7 @@ final class SystemAudioTap {
             guard let self else { return }
             let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
             var mono: [Float] = []
+            var sd: [Float] = []
             if interleaved, let b = list.first, let data = b.mData {
                 let n = Int(b.mDataByteSize) / MemoryLayout<Float>.size / channels
                 let p = data.assumingMemoryBound(to: Float.self)
@@ -84,16 +88,19 @@ final class SystemAudioTap {
                     for c in 0..<channels { s += p[i * channels + c] }
                     return s / Float(channels)
                 }
+                if channels >= 2 { sd = (0..<n).map { i in (p[i * channels] - p[i * channels + 1]) * 0.5 } }
             } else if !interleaved {
                 let bufs = list.compactMap { b -> UnsafePointer<Float>? in b.mData.map { UnsafePointer($0.assumingMemoryBound(to: Float.self)) } }
                 guard let first = list.first, !bufs.isEmpty else { return }
                 let n = Int(first.mDataByteSize) / MemoryLayout<Float>.size
                 mono = (0..<n).map { i in bufs.reduce(0) { $0 + $1[i] } / Float(bufs.count) }
+                if bufs.count >= 2 { sd = (0..<n).map { i in (bufs[0][i] - bufs[1][i]) * 0.5 } }
             }
             guard !mono.isEmpty else { return }
             let rms = sqrt(mono.reduce(0) { $0 + $1 * $1 } / Float(mono.count))
             self.lock.lock()
             self.samples.append(contentsOf: mono)
+            if sd.count == mono.count { self.side.append(contentsOf: sd) }
             self.lastRMS = rms
             self.lock.unlock()
         }
@@ -108,13 +115,15 @@ final class SystemAudioTap {
         return (Double(samples.count) / sampleRate, lastRMS)
     }
 
-    /// Stops listening and hands back the audio.
-    func finish() -> [Float] {
+    /// Stops listening and hands back the audio: mid, and side when it was stereo throughout.
+    func finish() -> (mono: [Float], side: [Float]?) {
         cleanup()
         lock.lock(); defer { lock.unlock() }
         let out = samples
+        let sd = side.count == samples.count ? side : nil
         samples = []
-        return out
+        side = []
+        return (out, sd)
     }
 
     private func cleanup() {
@@ -204,16 +213,16 @@ final class WholeSongListener: ObservableObject {
     func stop() {
         guard #available(macOS 14.2, *), let t = tap as? SystemAudioTap else { return }
         timer?.invalidate(); timer = nil
-        let samples = t.finish()
+        let (samples, side) = t.finish()
         let sr = t.sampleRate
         tap = nil
         stage = .analysing
         let done = onResult
         Task.detached(priority: .userInitiated) {
             // skip the silence before the song started and after it ended
-            let trimmed = Self.trimSilence(samples)
+            let keep = Self.loudRange(samples)
             do {
-                let result = try Transcriber.analyze(samples: trimmed, sampleRate: sr)
+                let result = try Transcriber.analyze(samples: Array(samples[keep]), side: side.map { Array($0[keep]) }, sampleRate: sr)
                 await MainActor.run {
                     self.stage = .done
                     done?(result)
@@ -232,9 +241,12 @@ final class WholeSongListener: ObservableObject {
         stage = .idle
     }
 
-    nonisolated static func trimSilence(_ x: [Float]) -> [Float] {
+    nonisolated static func trimSilence(_ x: [Float]) -> [Float] { Array(x[loudRange(x)]) }
+
+    /// The part of the audio between the silence before the song and after it.
+    nonisolated static func loudRange(_ x: [Float]) -> Range<Int> {
         let block = 4800
-        guard x.count > block * 4 else { return x }
+        guard x.count > block * 4 else { return 0..<x.count }
         func loud(_ i: Int) -> Bool {
             let end = min(x.count, i + block)
             var s: Float = 0
@@ -245,7 +257,7 @@ final class WholeSongListener: ObservableObject {
         while a + block < x.count && !loud(a) { a += block }
         var b = x.count - block
         while b > a && !loud(b) { b -= block }
-        return Array(x[a..<min(x.count, b + block)])
+        return a..<min(x.count, b + block)
     }
 
     /// Opens System Settings at the audio recording privacy page.
