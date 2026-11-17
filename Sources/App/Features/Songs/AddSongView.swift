@@ -459,7 +459,7 @@ struct AddSongView: View {
                             }
                             .padding(14)
                             .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface2))
-                            if let m = song.melody, !m.isEmpty {
+                            if MelodyExtractor.enabled, let m = song.melody, !m.isEmpty {
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack {
                                         Text("MELODY HEARD").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)

@@ -552,7 +552,12 @@ enum Transcriber {
             let tonic = minor ? 12 + r : r
             if path.first == tonic { home += 0.06 }
             if path.last == tonic { home += 0.06 }
-            let v = corr * 0.5 + fit + home
+            // the home chord is usually the one heard most. On real previews (`--chart-bench`), weighing
+            // the chords that fit the key and the time spent on its home chord more than the overall
+            // pitch profile took the key from 11/15 to 13/15 (Stand By Me came out in E, A Horse With
+            // No Name in B minor)
+            let share = Float(path.filter { $0 == tonic }.count) / Float(max(1, path.count))
+            let v = corr * 0.5 + fit * 1.5 + home + 0.4 * share
             if v > bv { bv = v; best = (r, minor) }
         } }
         return best
@@ -817,11 +822,34 @@ enum Transcriber {
         var notes = MelodyExtractor.place(t.heardMelody, beatTimes: t.beatTimes, zeroBeat: t.songZeroBeat,
                                           length: min(length, heardBeats), keyRoot: t.keyRoot, minorKey: t.minorKey)
         if extended, heardBeats < length - 1 {
-            // repeat on whole bars, so the tune stays lined up with the chords
-            let meter = Double(s.beatsPerBar)
-            let period = max(meter, (heardBeats / meter).rounded(.down) * meter)
+            // repeat with the chords, so the tune stays over the chords it was heard with
+            let period = repeatPeriod(s, heardBeats: heardBeats)
             notes = MelodyExtractor.tiled(notes.filter { $0.start < period }, period: period, length: length)
         }
         return notes.count >= 4 ? notes : nil
+    }
+
+    /// How often a short preview's song comes round again once its chords have been repeated to make
+    /// it last about a minute: a whole number of times round the chords, as much as was heard. The
+    /// melody and the lyrics repeat on this period so each word stays over the chord it was sung on
+    /// (repeating every so many bars instead slid them a bar or more off the chords on each pass).
+    static func repeatPeriod(_ s: Song, heardBeats: Double) -> Double {
+        let meter = Double(s.beatsPerBar)
+        let secs = s.sections
+        func beats(_ sec: SongSection) -> Double { sec.tokens(beatsPerBar: s.beatsPerBar).reduce(0) { $0 + $1.beats } }
+        var unit = 0.0
+        if secs.count == 1 {
+            // one progression looped: once round the loop
+            unit = beats(secs[0])
+        } else if !secs.isEmpty {
+            // several parts played through again and again: one whole pass (the shortest repeating
+            // run of parts that covers what was heard)
+            for p in 1...secs.count where secs.count % p == 0 && secs.indices.allSatisfy({ secs[$0] == secs[$0 % p] }) {
+                let u = secs.prefix(p).reduce(0) { $0 + beats($1) * Double(max(1, $1.repeats)) }
+                if u >= heardBeats - 2 * meter { unit = u; break }
+            }
+        }
+        guard unit > 0 else { return max(meter, (heardBeats / meter).rounded(.down) * meter) }
+        return max(1, (heardBeats / unit + 0.02).rounded(.down)) * unit
     }
 }

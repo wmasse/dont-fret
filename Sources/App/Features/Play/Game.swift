@@ -903,6 +903,11 @@ struct SheetModeView: View {
 
     private struct Block: Identifiable { let id: Int; let title: String; let events: [ChordEvent] }
 
+    /// Scroll id of a bar. Its own kind of id: the sections and rows around the bars are numbered
+    /// 0, 1, 2… too, and scrolling to a plain number could land on section 3 instead of bar 3, far
+    /// ahead of the bar being played.
+    static func barID(_ i: Int) -> String { "bar-\(i)" }
+
     private var blocks: [Block] {
         var out: [Block] = []
         var cur: [ChordEvent] = []
@@ -946,7 +951,11 @@ struct SheetModeView: View {
                 .scrollIndicators(.hidden)
                 .onChange(of: engine.index) { _, i in
                     guard engine.autoScroll, i < engine.events.count else { return }
-                    withAnimation(.easeInOut(duration: 0.6)) { proxy.scrollTo(i, anchor: UnitPoint(x: 0.5, y: 0.35)) }
+                    withAnimation(.easeInOut(duration: 0.6)) { proxy.scrollTo(Self.barID(i), anchor: UnitPoint(x: 0.5, y: 0.35)) }
+                }
+                .onChange(of: engine.autoScroll) { _, on in
+                    guard on, engine.index < engine.events.count else { return }
+                    withAnimation(.easeInOut(duration: 0.4)) { proxy.scrollTo(Self.barID(engine.index), anchor: UnitPoint(x: 0.5, y: 0.35)) }
                 }
             }
             .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Theme.surface.opacity(0.7)))
@@ -997,7 +1006,7 @@ struct SheetModeView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { engine.seek(toEvent: e.id) }
         .help("Double-click to jump here")
-        .id(e.id)
+        .id(Self.barID(e.id))
     }
 
     private var sidePanel: some View {

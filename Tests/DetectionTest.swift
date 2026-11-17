@@ -52,6 +52,10 @@ struct SelfTest {
         if CommandLine.arguments.contains("--chart-bench") { chartBench(); return }
         if CommandLine.arguments.contains("--whole-bench") { wholeBench(); return }
         if CommandLine.arguments.contains("--melody-bench") { melodyBench(); return }
+        if CommandLine.arguments.contains("--chord-debug") { chordDebug(); return }
+        if let i = CommandLine.arguments.firstIndex(of: "--melody-render") {
+            melodyRender(into: CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "build/listen"); return
+        }
         if CommandLine.arguments.contains("--melody") { melodyChecks(); return }
         if CommandLine.arguments.contains("--lyrics") { lyricsChecks(); return }
         if CommandLine.arguments.contains("--lyrics-bench") { lyricsBench(); return }

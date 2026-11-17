@@ -217,7 +217,7 @@ struct SongDetailView: View {
             tricksCard(s)
             if let r = progress.data.songs[base.id], r.history.count >= 2 { historyCard(r) }
             if let l = s.lyrics, !l.isEmpty { LyricsCard(player: hear, song: s, tempo: tempo) }
-            if let m = s.melody, !m.isEmpty { MelodyCard(player: hear, song: s, tempo: tempo) }
+            if MelodyExtractor.enabled, let m = s.melody, !m.isEmpty { MelodyCard(player: hear, song: s, tempo: tempo) }
             structureCard(s)
         }
         .overlay(alignment: .bottom) {

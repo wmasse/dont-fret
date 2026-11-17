@@ -28,6 +28,12 @@ struct HeardNote: Hashable {
 /// Viterbi tracking with a voiced/unvoiced state (smooth pitch, few jumps) → notes, split where the
 /// voice dips between syllables → snapped to the song's beat grid → cleaned up for a guitar.
 enum MelodyExtractor {
+    /// The melody is hidden and silent unless this is on: on real recordings it gets only about 70%
+    /// of the notes right (`build/selftest --melody-bench`), too few to sound like the song.
+    /// Songs still keep their melody, so turning it on shows it for songs already added:
+    ///   defaults write app.dontfret.guitar melodyEnabled -bool true
+    static var enabled: Bool { UserDefaults.standard.bool(forKey: "melodyEnabled") }
+
     /// Lowest and highest pitch searched (G2 to D6), in fifth-of-a-semitone steps.
     static let lowMidi: Float = 43, highMidi: Float = 86
     static let binsPerSemitone = 5
@@ -309,7 +315,46 @@ enum MelodyExtractor {
                 merged[merged.count - 1] = last
             } else { merged.append(n) }
         }
-        return fixOctaveSlips(merged)
+        return tidy(fixOctaveSlips(merged), scale: scale)
+    }
+
+    /// Takes out what a guitar shouldn't pluck. Checked against real recordings (`--melody-bench`):
+    /// notes outside the key were right 6% of the time; weak short blips 27%; notes an octave or
+    /// more from the rest of the tune were mostly octave slips. A plucked wrong note is louder on a
+    /// guitar than a missing one, so out-of-key notes and weak blips go, and far-off notes come
+    /// back an octave towards the tune.
+    static func tidy(_ notes: [HeardNote], scale: Set<Int>?) -> [HeardNote] {
+        var out = notes
+        // the tune's own register (its middle note), for octave slips the neighbour check missed
+        let mids = out.map(\.midi).sorted()
+        if !mids.isEmpty {
+            let middle = mids[mids.count / 2]
+            for i in out.indices {
+                while out[i].midi - middle >= 12, Float(out[i].midi - 12) >= lowMidi { out[i].midi -= 12 }
+                while middle - out[i].midi >= 12 { out[i].midi += 12 }
+            }
+        }
+        // out of key: only a long, clear note stays (a held blue note, a real chromatic moment).
+        // The key comes from the chords and can be wrong; then the tune's own scale is used, and
+        // a tune that fits no major or minor scale well keeps all its notes.
+        func cover(_ sc: Set<Int>) -> Double {
+            let all = out.reduce(0.0) { $0 + ($1.end - $1.start) }
+            let inside = out.filter { sc.contains((($0.midi % 12) + 12) % 12) }.reduce(0.0) { $0 + ($1.end - $1.start) }
+            return all > 0 ? inside / all : 0
+        }
+        var scale = scale
+        if scale.map(cover) ?? 0 < 0.85 {
+            let own = (0..<12).map { r in Set([0, 2, 4, 5, 7, 9, 11].map { (r + $0) % 12 }) }.max { cover($0) < cover($1) }
+            scale = own.flatMap { cover($0) >= 0.9 ? $0 : nil }
+        }
+        if let scale {
+            out.removeAll { n in !scale.contains(((n.midi % 12) + 12) % 12) && !(n.end - n.start >= 0.5 && n.strength >= 0.6) }
+        }
+        // weak short blips
+        out.removeAll { $0.strength < 0.45 && $0.end - $0.start < 0.4 }
+        // (Folding quick notes between two others into the next note helped real recordings a
+        // little but cost 5 points on the synthetic mono mixes, so it's left out.)
+        return out
     }
 
     /// A note an octave (or two) away from both neighbours, which agree with each other, is an

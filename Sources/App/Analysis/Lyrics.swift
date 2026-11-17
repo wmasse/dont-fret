@@ -271,8 +271,7 @@ enum Lyrics {
         func beat(_ sec: Double) -> Double { MelodyExtractor.beatPosition(sec - offset, beatTimes: t.beatTimes) - t.songZeroBeat }
         let heardBeats = beat(offset + t.duration)
         let tile = extended && heardBeats < length - 1
-        let meter = Double(s.beatsPerBar)
-        let period = tile ? max(meter, (heardBeats / meter).rounded(.down) * meter) : length
+        let period = tile ? Transcriber.repeatPeriod(s, heardBeats: heardBeats) : length
         var placed: [LyricLine] = []
         for i in lines.indices {
             let a = beat(lines[i].time)

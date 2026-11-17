@@ -143,6 +143,7 @@ extension SelfTest {
         var totals: [Verdict: Int] = [:]
         var placedRight = 0, placedWritten = 0
         var allTiming: [Double] = []
+        var listenTotal = ListenScore()
         var rowsOut: [String] = []
         for c in tuneCases {
             let slug = c.query.lowercased().filter { $0.isLetter || $0 == " " }.replacingOccurrences(of: " ", with: "-")
@@ -172,6 +173,15 @@ extension SelfTest {
                 return HeardNote(start: a, end: b, midi: n.midi, strength: 1)
             }
             let placedRows = alignToScore(placed, score: parseScore(c.score), voice: c.voice).rows
+            let anchors = listenAnchors(dir.appendingPathComponent("tune-" + slug + ".anchors"), rows: rows, shift: shift)
+            let listen = listenScore(placed, score: parseScore(c.score), anchors: anchors.anchors, shift: anchors.shift)
+            listenTotal.add(listen)
+            if let out = ProcessInfo.processInfo.environment["MELODY_LABELS"] {
+                let lines = listenLabels(tr.heardMelody, score: parseScore(c.score), anchors: anchors.anchors, shift: anchors.shift)
+                let placedLines = listenLabels(placed, score: parseScore(c.score), anchors: anchors.anchors, shift: anchors.shift)
+                try? ("# \(slug) \(tr.keyRoot) \(tr.minorKey ? 1 : 0) \(listen.written)\n" + placedLines.joined(separator: "\n") + "\n").write(toFile: out + "/placed-" + slug + ".txt", atomically: true, encoding: .utf8)
+                try? ("# \(slug) \(tr.keyRoot) \(tr.minorKey ? 1 : 0) \(listen.written)\n" + lines.joined(separator: "\n") + "\n").write(toFile: out + "/" + slug + ".txt", atomically: true, encoding: .utf8)
+            }
             let pr = placedRows.filter { $0.verdict == .right }.count, pw = placedRows.filter { $0.truth != nil }.count
             placedRight += pr; placedWritten += pw
             var counts: [Verdict: Int] = [:]
@@ -192,6 +202,7 @@ extension SelfTest {
             line += String(format: " · onset err %.2f beat", onset)
             line += " · after snapping to beats: right \(Int((100 * Double(pr) / Double(max(1, pw))).rounded()))%"
             rowsOut.append(line)
+            rowsOut.append("      as played: " + listen.summary)
             if verbose {
                 for r in rows {
                     var h = String(repeating: " ", count: 25)
@@ -211,6 +222,8 @@ extension SelfTest {
         print("   of the written notes: right \(pct(.right, written)) · octave off \(pct(.octave, written)) · semitone off \(pct(.semitone, written)) · tone off \(pct(.tone, written)) · other wrong \(pct(.wrong, written)) · missed \(pct(.missed, written))")
         print("   of the heard notes: extra \(pct(.extra, heard))   (onset error per song below: only meaningful at a steady tempo)")
         print("   after snapping to the song's beats (what the app plays): right \(Int((100 * Double(placedRight) / Double(max(1, placedWritten))).rounded()))% of the written notes")
+        print("   as played, on the recording's clock: " + listenTotal.summary)
+        print("      " + listenTotal.breakdown)
         for r in rowsOut { print("   " + r) }
     }
 }

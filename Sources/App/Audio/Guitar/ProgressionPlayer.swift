@@ -41,7 +41,7 @@ final class ProgressionPlayer {
         beatSeconds = beat
         startedAt = Date()
         playing = true
-        if melodyOn, let melody = song.melody, !melody.isEmpty {
+        if melodyOn, MelodyExtractor.enabled, let melody = song.melody, !melody.isEmpty {
             playMelody(melody, from: events[min(start, events.count - 1)].start, beat: beat, capo: capo)
         }
         task = Task { [weak self] in
