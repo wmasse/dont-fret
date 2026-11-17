@@ -177,3 +177,25 @@ The test synthesizes every chord shape and single note and runs them through the
 - Guitar sound: every note from E2 to E5 within 4.4 cents (1.9 average) by the app's own tuner; bends, slides and hammer-ons within 3 cents; no clipping; partitioned convolution matches direct convolution; stereo correlation ≈ 0.6; thumb < finger < pick brightness; sympathetic resonance stays stable; the slowest 256-sample block takes ~2 ms of its 5.8 ms.
 
 These numbers come from synthesized sound. A real guitar in a real room will differ, so run **Settings → Microphone & timing → Calibrate** first.
+
+## TestFlight (Mac App Store build)
+
+`scripts/appstore.sh <version> [build] [--upload]` builds the last commit as a universal, sandboxed app, signs it for the Mac App Store, packages `release/DontFret-<version>-<build>.pkg` and, with `--upload`, sends it to App Store Connect. The build shows up in TestFlight once Apple finishes processing it, usually within 5–30 minutes. The build number defaults to a timestamp, so every upload is new.
+
+The team (9A9HR6WT4K) is an individual enrollment, so only the account holder can create signing certificates. Other developers sign with the account holder's certificates, shared as a password-protected `.p12`.
+
+One-time setup on a new Mac:
+1. Install Xcode and open it once to accept the license.
+2. Double-click the `.p12` you were sent and enter its password. It adds two certificates to your login keychain: **Apple Distribution: Jeremy Theodore Zay (9A9HR6WT4K)** and **3rd Party Mac Developer Installer: Jeremy Theodore Zay (9A9HR6WT4K)**. Check with `security find-identity -v`.
+3. For uploads, create an app-specific password at [account.apple.com](https://account.apple.com) → Sign-In and Security → App-Specific Passwords, then save it in your keychain:
+   ```bash
+   xcrun altool --store-password-in-keychain-item ASC_PASSWORD -u you@example.com -p <app-specific password>
+   ```
+   Your App Store Connect role needs to be App Manager (or higher) for Don't Fret.
+
+Then, to build and upload:
+```bash
+ASC_APPLE_ID=you@example.com scripts/appstore.sh 1.1 --upload
+```
+
+The provisioning profile (`signing/embedded.provisionprofile`) is in the repo and is valid until Nov 2027. It's tied to the shared Apple Distribution certificate, so it works for anyone who has the `.p12`. The entitlements are in `signing/DontFret.entitlements`. The store build is compiled with `-D APPSTORE`, which turns off Songsterr chord-chart lookups.
