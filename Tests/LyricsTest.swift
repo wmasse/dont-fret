@@ -79,6 +79,10 @@ extension SelfTest {
         let dir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BENCH_DIR"] ?? "build/bench", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var found = 0, trusted = 0
+        var wordTrusted = 0, wordMismatch = 0, bothTrusted = 0, bothAgree = 0
+        var wordOffset: [String: Double] = [:]
+        var heardBySong: [(title: String, words: [HeardWord], duration: Double, seconds: Double)] = []
+        var linesBySong: [[TimedLyric]] = []
         for b in benchSongs {
             let slug = ChordCharts.normTitle(b.title).replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: "'", with: "")
             let trackFile = dir.appendingPathComponent(slug + ".track.json")
@@ -107,10 +111,29 @@ extension SelfTest {
             }
             guard let lines, let tr = try? Transcriber.analyze(url: audio) else { print("\(b.title): couldn't analyse"); continue }
             found += 1
+            // the words the speech recogniser hears, lined up against the lyrics' words
+            let words = sync { await WordListener.words(url: audio, language: WordListener.language(of: lines)) }
+            heardBySong.append((b.title, words, tr.duration, seconds)); linesBySong.append(lines)
+            let wa = Lyrics.alignWords(lines, heard: words, recordingSeconds: tr.duration, range: 0...max(0, seconds - tr.duration))
+            if let wa {
+                if wa.trustworthy { wordTrusted += 1; wordOffset[b.title] = wa.offset }
+                if wa.mismatch { wordMismatch += 1 }
+                // check by eye: a few heard words next to the lyric line the track has at that moment
+                let sample = words.filter { Lyrics.wordKey($0.text).count >= 4 }.prefix(3).map { w -> String in
+                    let line = lines.last { $0.time <= w.time + wa.offset + 0.4 && !$0.text.isEmpty }?.text ?? "-"
+                    return String(format: "“%@” @%.1f → %@", w.text, w.time, String(line.prefix(38)))
+                }
+                print(String(format: "   words: %d heard, %d on the lyrics (%.0f%%), offset %.1f s, votes %.1f vs %.1f elsewhere%@ → %@", wa.heard, wa.matched, wa.fraction * 100,
+                             wa.offset, wa.score, wa.runnerUp, wa.rivalsAgree ? " (rivals show the same words)" : "", wa.trustworthy ? "TRUSTED" : (wa.mismatch ? "MISMATCH" : "not trusted")))
+                print("      " + sample.joined(separator: "  |  "))
+            } else { print("   words: \(words.count) heard, no alignment") }
             guard let a = Lyrics.align(lines, heard: tr.heardMelody, recordingSeconds: tr.duration, range: 0...max(0, seconds - tr.duration)) else {
                 print("\(b.title): no alignment (heard \(tr.heardMelody.count) notes, \(lines.count) lines, \(tr.duration) s)"); continue
             }
-            if a.trustworthy { trusted += 1 }
+            if a.trustworthy {
+                trusted += 1
+                if let w = wordOffset[b.title] { bothTrusted += 1; if abs(w - a.offset) <= 1 { bothAgree += 1 } }
+            }
             // independent check: at the right offset, lines with more syllables get more heard notes
             func syllables(_ t: String) -> Double {
                 var n = 0.0; var prevVowel = false
@@ -150,6 +173,16 @@ extension SelfTest {
                          inside.first?.text ?? ""))
         }
         print("\nSynced lyrics for \(found)/\(benchSongs.count) songs; lined up confidently \(trusted)/\(found)")
+        print("By the sung words: lined up confidently \(wordTrusted)/\(found); same place as the voice-timing match \(bothAgree)/\(bothTrusted) where both were sure")
+        // another song's lyrics must never be lined up (that would show the wrong words)
+        var wrongTrusted: [String] = [], wrongFlagged = 0
+        for i in heardBySong.indices where heardBySong.count > 1 {
+            let h = heardBySong[i], other = linesBySong[(i + 1) % linesBySong.count]
+            guard let wa = Lyrics.alignWords(other, heard: h.words, recordingSeconds: h.duration, range: 0...max(0, (other.last?.time ?? 200) + 10 - h.duration)) else { continue }
+            if wa.trustworthy { wrongTrusted.append("\(heardBySong[(i + 1) % heardBySong.count].title) lyrics on \(h.title)") }
+            if wa.mismatch { wrongFlagged += 1 }
+        }
+        print("Another song's lyrics: wrongly lined up \(wrongTrusted.count)/\(heardBySong.count)\(wrongTrusted.isEmpty ? "" : " — " + wrongTrusted.joined(separator: ", ")); recognised as the wrong lyrics \(wrongFlagged)/\(heardBySong.count)")
     }
 }
 #endif

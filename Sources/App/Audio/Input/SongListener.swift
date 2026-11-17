@@ -176,6 +176,7 @@ final class WholeSongListener {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var target: Double = 0
     @ObservationIgnored private var onResult: ((Transcription) -> Void)?
+    @ObservationIgnored private var language: String?
 
     static var isSupported: Bool {
         if #available(macOS 14.2, *) { return true }
@@ -183,13 +184,15 @@ final class WholeSongListener {
     }
 
     /// Starts listening; finishes by itself shortly after `songSeconds`, or when `stop()` is called.
-    func start(songSeconds: Double?, onResult: @escaping (Transcription) -> Void) {
+    /// `language` is the lyrics' language, so the sung words can be picked out to line the lyrics up.
+    func start(songSeconds: Double?, language: String? = nil, onResult: @escaping (Transcription) -> Void) {
         guard #available(macOS 14.2, *) else { stage = .failed(ListenError.unsupported.localizedDescription); return }
         cancel()
         do {
             let t = try SystemAudioTap()
             tap = t
             self.onResult = onResult
+            self.language = language
             target = (songSeconds ?? 0) > 30 ? songSeconds! + 4 : 0
             seconds = 0; heardSeconds = 0; level = 0
             stage = .listening
@@ -219,11 +222,14 @@ final class WholeSongListener {
         tap = nil
         stage = .analysing
         let done = onResult
+        let language = language
         Task.detached(priority: .userInitiated) {
             // skip the silence before the song started and after it ended
             let keep = Self.loudRange(samples)
             do {
-                let result = try Transcriber.analyze(samples: Array(samples[keep]), side: side.map { Array($0[keep]) }, sampleRate: sr)
+                let mono = Array(samples[keep])
+                var result = try Transcriber.analyze(samples: mono, side: side.map { Array($0[keep]) }, sampleRate: sr)
+                result.heardWords = await WordListener.words(samples: mono, sampleRate: sr, language: language)
                 await MainActor.run {
                     self.stage = .done
                     done?(result)

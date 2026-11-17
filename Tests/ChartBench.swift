@@ -52,6 +52,7 @@ extension SelfTest {
         var lengthErr: [Double] = []
         var usedChart = 0, chartWrongKeyUsed = 0
         var finalKey = 0, finalRecall = 0.0, finalPrec = 0.0
+        var beatSongs = 0, beatRight = 0, beatRoot = 0, beatNear = 0, beatTotal = 0
         for b in benchSongs {
             let slug = ChordCharts.normTitle(b.title).replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: "'", with: "")
             let trackFile = dir.appendingPathComponent(slug + ".track.json")
@@ -77,6 +78,29 @@ extension SelfTest {
             }
             let trackSeconds = t.trackTimeMillis.map { Double($0) / 1000 }
             let m = chart.flatMap { ChordCharts.match($0, to: tr, trackSeconds: trackSeconds) }
+            // beat by beat: the chord the transcriber heard against the chart's chord on that beat,
+            // where the chart lines up well (the chart is a human transcription, so it's the reference)
+            var beatLine = ""
+            if let m, m.quality == .high, m.beatChords.count == tr.beatPath.count {
+                let med = tr.beatRMS.sorted()[tr.beatRMS.count / 2]
+                var right = 0, root = 0, near = 0, total = 0
+                var confusions: [String: Int] = [:]
+                for i in tr.beatPath.indices where tr.beatRMS[i] >= med * 0.35 {
+                    guard let want = m.beatChords[i] else { continue }
+                    total += 1
+                    let got = tr.beatPath[i]
+                    if got == want { right += 1 }
+                    if got % 12 == want % 12 { root += 1 }
+                    // the right chord, just a beat early or late (a timing slip, not a wrong chord)
+                    if got == want || (i > 0 && m.beatChords[i - 1] == got) || (i + 1 < m.beatChords.count && m.beatChords[i + 1] == got) { near += 1 }
+                    else { confusions["\(Transcriber.chordName(want, flatKey: false))→\(Transcriber.chordName(got, flatKey: false))", default: 0] += 1 }
+                }
+                if total > 0 {
+                    beatSongs += 1; beatRight += right; beatRoot += root; beatNear += near; beatTotal += total
+                    let top = confusions.sorted { $0.value > $1.value }.prefix(3).map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")
+                    beatLine = String(format: "\n      beat by beat vs the chart: %.0f%% right chord, %.0f%% right root, %.0f%% within a beat (%d beats); wrong: %@", 100 * Double(right) / Double(total), 100 * Double(root) / Double(total), 100 * Double(near) / Double(total), total, top)
+                }
+            }
 
             func chords(_ secs: [SongSection], meter: Int) -> [(String, Double)] {
                 secs.flatMap { s in Array(repeating: s.tokens(beatsPerBar: meter), count: max(1, s.repeats)).flatMap { $0 } }
@@ -132,7 +156,7 @@ extension SelfTest {
             } else {
                 line += "\n      chart: \(chart == nil ? "none found" : "couldn't line up")"
             }
-            rows.append(line)
+            rows.append(line + beatLine)
         }
         // wrong chart on purpose: should come out Poor and not be used
         var wrongUsed = 0, wrongTotal = 0
@@ -150,6 +174,7 @@ extension SelfTest {
         func pct(_ x: Double) -> String { String(format: "%.0f%%", 100 * x) }
         print("\nReal-song benchmark (\(n) songs with known chords)")
         print("   preview only : key right \(audioKey)/\(n), real chords found \(pct(audioRecall / Double(max(1, n)))), time on a right chord \(pct(audioPrec / Double(max(1, n))))")
+        print("   beat by beat : right chord on \(pct(Double(beatRight) / Double(max(1, beatTotal)))) of beats, right root on \(pct(Double(beatRoot) / Double(max(1, beatTotal)))), right chord within a beat \(pct(Double(beatNear) / Double(max(1, beatTotal)))) (\(beatTotal) beats in \(beatSongs) songs with a well-matched chart)")
         print("   chart found  : \(chartFound)/\(n); used (fit not poor) \(usedChart), of which wrong \(chartWrongKeyUsed)")
         print("   chart+audio  : key right \(chartKey)/\(chartFound), real chords found \(pct(chartRecall / Double(max(1, chartFound)))), time on a right chord \(pct(chartPrec / Double(max(1, chartFound))))")
         print("   what you get : key right \(finalKey)/\(n), real chords found \(pct(finalRecall / Double(max(1, n)))), time on a right chord \(pct(finalPrec / Double(max(1, n)))), whole song for \(usedChart)/\(n)")

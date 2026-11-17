@@ -250,6 +250,117 @@ enum Lyrics {
         return Alignment(offset: bestOffset, score: best.r, margin: best.r - away, rivalsAgree: agree, confirmed: confirmed)
     }
 
+    // MARK: lining up by the words that are sung
+
+    struct WordAlignment {
+        /// Seconds into the full track where the recording starts.
+        var offset: Double
+        /// Heard words that land on the same word of the lyrics at this offset.
+        var matched: Int
+        /// Words heard (fillers like "oh" and "yeah" left out).
+        var heard: Int
+        /// Weighted votes for this offset, and for the best offset more than 3 s away.
+        var score: Double
+        var runnerUp: Double
+        /// Every offset that did nearly as well shows the same words at the same moments (a repeated chorus).
+        var rivalsAgree: Bool
+        var fraction: Double { heard > 0 ? Double(matched) / Double(heard) : 0 }
+        /// The best place has to stand out from anywhere else. When most of what was heard is in the
+        /// lyrics there, a smaller lead is enough: a second verse that shares most of its words with
+        /// the first still loses on the words that differ.
+        var trustworthy: Bool {
+            guard matched >= 4, fraction >= 0.25 else { return false }
+            if rivalsAgree || score >= runnerUp * 1.4 { return true }
+            return matched >= 15 && fraction >= 0.6 && score >= runnerUp * 1.2
+        }
+        /// Plenty of words were heard but almost none are in these lyrics: they're for another song
+        /// (or a different version), so showing them would be wrong.
+        var mismatch: Bool { heard >= 12 && fraction < 0.12 }
+    }
+
+    /// A word reduced to letters and digits, so "Don't," and "dont" match.
+    static func wordKey<S: StringProtocol>(_ s: S) -> String {
+        String(String.UnicodeScalarView(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }))
+    }
+
+    private static let fillers: Set<String> = ["oh", "ooh", "ah", "aah", "yeah", "la", "na", "hey", "mm", "mmm", "whoa", "woah", "uh", "huh", "ha", "ay", "eh", "ooo", "oooh"]
+    private static let common: Set<String> = ["the", "a", "an", "and", "i", "you", "to", "it", "in", "of", "me", "my", "is", "on", "be",
+                                              "that", "so", "for", "we", "your", "im", "its", "dont", "but", "all", "with", "this", "at",
+                                              "are", "was", "just", "like", "now", "what", "when", "can", "do", "no", "if", "up", "out",
+                                              "el", "de", "que", "y", "en", "un", "una", "le", "les", "et", "je", "tu", "die", "der", "und"]
+
+    /// Finds where in the full track the recording starts from the words the speech recogniser
+    /// heard: each heard word votes for every offset that puts it on the same word in the lyrics,
+    /// rarer words count for more, and the winner is refined on the words that start lines (whose
+    /// times the LRC file gives exactly).
+    static func alignWords(_ lines: [TimedLyric], heard: [HeardWord], recordingSeconds: Double,
+                           range: ClosedRange<Double>) -> WordAlignment? {
+        // the lyrics' words, each at about the time it's sung
+        var lw: [(t: Double, w: String, first: Bool)] = []
+        var counts: [String: Int] = [:]
+        for i in lines.indices where !lines[i].text.isEmpty {
+            let ws = lines[i].text.split(whereSeparator: { $0.isWhitespace || $0 == "-" }).map { wordKey($0) }.filter { !$0.isEmpty }
+            guard !ws.isEmpty else { continue }
+            let len = singingLength(lines, i)
+            for (j, w) in ws.enumerated() {
+                lw.append((lines[i].time + len * (Double(j) + 0.3) / Double(ws.count), w, j == 0))
+                counts[w, default: 0] += 1
+            }
+        }
+        let hw = heard.map { (t: $0.time, w: wordKey($0.text)) }.filter { !$0.w.isEmpty && !fillers.contains($0.w) }
+        guard lw.count >= 4, hw.count >= 3, range.upperBound >= range.lowerBound else { return nil }
+        let byWord = Dictionary(grouping: lw.indices, by: { lw[$0].w })
+        func weight(_ w: String) -> Double { (common.contains(w) ? 0.35 : 1) / sqrt(Double(counts[w] ?? 1)) }
+
+        let dt = 0.1, tol = 1.6
+        let lo = range.lowerBound
+        let nBins = Int(((range.upperBound - lo) / dt).rounded(.up)) + 1
+        var score = [Double](repeating: 0, count: nBins)
+        var stamp = [Int](repeating: -1, count: nBins)
+        for (k, h) in hw.enumerated() {
+            guard let idx = byWord[h.w] else { continue }
+            let wgt = weight(h.w)
+            for i in idx {
+                let o = lw[i].t - h.t
+                let a = max(0, Int(((o - tol - lo) / dt).rounded(.up))), b = min(nBins - 1, Int(((o + tol - lo) / dt).rounded(.down)))
+                guard a <= b else { continue }
+                for j in a...b where stamp[j] != k { stamp[j] = k; score[j] += wgt }   // each heard word votes once per offset
+            }
+        }
+        guard let bestBin = score.indices.max(by: { score[$0] < score[$1] }), score[bestBin] > 0 else {
+            return WordAlignment(offset: 0, matched: 0, heard: hw.count, score: 0, runnerUp: 0, rivalsAgree: false)
+        }
+        // the middle of the best plateau
+        var a = bestBin, b = bestBin
+        while a > 0 && score[a - 1] >= score[bestBin] - 1e-9 { a -= 1 }
+        while b < nBins - 1 && score[b + 1] >= score[bestBin] - 1e-9 { b += 1 }
+        var offset = lo + Double(a + b) / 2 * dt
+
+        // refine on the matched words; line starts are exact in the LRC, other words are estimates
+        func matches(at o: Double) -> [(h: Double, l: Double, first: Bool)] {
+            hw.compactMap { h in
+                guard let idx = byWord[h.w],
+                      let near = idx.min(by: { abs(lw[$0].t - (h.t + o)) < abs(lw[$1].t - (h.t + o)) }) else { return nil }
+                return abs(lw[near].t - (h.t + o)) <= tol ? (h.t, lw[near].t, lw[near].first) : nil
+            }
+        }
+        let firsts = matches(at: offset).filter(\.first).map { $0.l - $0.h }.sorted()
+        if firsts.count >= 3 { offset = min(range.upperBound, max(lo, firsts[firsts.count / 2])) }
+        let matched = matches(at: offset).count
+
+        let bestScore = score[bestBin]
+        let away = Int(3 / dt)
+        let runnerUp = score.indices.filter { abs($0 - bestBin) > away }.map { score[$0] }.max() ?? 0
+        // local peaks elsewhere that nearly tie: fine if they'd show the same words
+        let w = Int(1 / dt)
+        let rivals = score.indices.filter { i in
+            guard abs(i - bestBin) > away, score[i] >= bestScore * 0.9 else { return false }
+            return score[max(0, i - w)...min(nBins - 1, i + w)].allSatisfy { $0 <= score[i] }
+        }.map { lo + Double($0) * dt }
+        let agree = !rivals.isEmpty && rivals.allSatisfy { sameWords(lines, offset, $0, seconds: recordingSeconds) }
+        return WordAlignment(offset: offset, matched: matched, heard: hw.count, score: bestScore, runnerUp: runnerUp, rivalsAgree: agree)
+    }
+
     /// Whether the recording starting at `a` or at `b` in the track would show the same words at
     /// (nearly) the same moments.
     static func sameWords(_ lines: [TimedLyric], _ a: Double, _ b: Double, seconds: Double) -> Bool {

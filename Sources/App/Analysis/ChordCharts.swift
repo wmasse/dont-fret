@@ -65,6 +65,9 @@ struct ChartMatch {
     var nearKey = false
     /// Best fit at each key shift (for diagnostics).
     var shiftFits: [Double] = []
+    /// The chart's chord on each of the preview's beats as it sounds (0–11 major, 12–23 minor on that
+    /// root, like `Transcription.beatPath`), nil where the chart has none (for the benchmarks).
+    var beatChords: [Int?] = []
 
     /// Share of the best possible fit that the chart reaches on the preview.
     var ratio: Double { audioFit > 0 ? fit / audioFit : 0 }
@@ -535,11 +538,18 @@ enum ChordCharts {
         let main = weight.sorted { $0.value > $1.value }.prefix(2).map(\.key)
         if main.contains(tr.minorKey ? 12 + tr.keyRoot : tr.keyRoot) { key = (tr.keyRoot, tr.minorKey) }
 
+        let beatChords: [Int?] = (0..<n).map { i in
+            let k = b.offset + i
+            guard k >= 0, k < arr.beats.count, let sym = ChordSymbol.parse(sounding(arr.beats[k])) else { return nil }
+            let minor = [.minor, .min7, .m7b5, .dim, .dim7].contains(sym.quality)
+            return sym.root + (minor ? 12 : 0)
+        }
         return ChartMatch(chart: chart, shift: b.shift, lineBars: b.lineBars, chordsPerBar: b.cpb, offset: b.offset,
                           fit: Double(b.fit), audioFit: Double(audioFit), otherKeyFit: Double(other),
                           sections: sections, previewBars: bars, seconds: Double(arr.beats.count) * 60 / bpm,
                           trackSeconds: trackSeconds, keyRoot: key.0, minorKey: key.1, extended: extended,
-                          unexpectedKey: unexpectedKey, nearKey: nearKey, shiftFits: bestPerShift.map(Double.init))
+                          unexpectedKey: unexpectedKey, nearKey: nearKey, shiftFits: bestPerShift.map(Double.init),
+                          beatChords: beatChords)
     }
 
     /// Flat spellings when the sounding key is a flat key (F, Bb, Eb, Ab, Db).

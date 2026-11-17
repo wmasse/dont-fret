@@ -335,7 +335,7 @@ struct AddSongView: View {
                 try await SongFinder.download(p, to: audio)
                 if let a = t.largeArtworkURL { try? await SongFinder.download(a, to: art) }
                 await MainActor.run { step = 1; previewFile = audio; artFile = FileManager.default.fileExists(atPath: art.path) ? art : nil }
-                let result = try await Task.detached(priority: .userInitiated) {
+                var result = try await Task.detached(priority: .userInitiated) {
                     try Transcriber.analyze(url: audio) { s in Task { @MainActor in step = 1 + s } }
                 }.value
                 await MainActor.run { step = 4 }
@@ -345,6 +345,10 @@ struct AddSongView: View {
                 let chart = await ChordCharts.find(title: t.trackName, artist: t.artistName)
                 let match = chart.flatMap { ChordCharts.match($0, to: result, trackSeconds: seconds) }
                 let found = await lyrics
+                // the sung words, to line the lyrics up by what's sung
+                if case .synced(let lines) = found {
+                    result.heardWords = await WordListener.words(url: audio, language: WordListener.language(of: lines))
+                }
                 await MainActor.run {
                     transcription = result
                     chartMatch = match
@@ -644,13 +648,31 @@ struct AddSongView: View {
                                 note: "\(level.rawValue) version, worked out from the song's 30-second preview. Check it by ear and tap Edit to fix anything.")
     }
 
-    /// Where in the full track a recording starts, found by matching the heard voice against the
-    /// lyrics' timings. A whole-song recording that can't be matched is taken to start with the song;
-    /// a preview that can't be matched gets no lyrics rather than wrong ones.
+    /// The language the found lyrics are in, for picking out the sung words.
+    private var lyricsLanguage: String? {
+        if case .synced(let lines)? = lyricsFound { return WordListener.language(of: lines) }
+        return nil
+    }
+
+    /// Where in the full track a recording starts.
+    ///
+    /// 1. By the sung words (macOS 26+): the speech recogniser's words matched against the lyrics'
+    ///    words. If plenty was heard and it isn't in these lyrics, they're for another song or
+    ///    version, and none are shown.
+    /// 2. Otherwise by when someone seems to be singing, matched against the lyrics' timings.
+    /// A whole-song recording that can't be matched is taken to start with the song; a preview that
+    /// can't be matched gets no lyrics rather than wrong ones.
     private func lyricsStart(in tr: Transcription, whole: Bool, _ t: CatalogTrack) -> Double? {
         guard case .synced(let lines)? = lyricsFound, let last = lines.last else { return nil }
         let total = t.trackTimeMillis.map { Double($0) / 1000 } ?? last.time + 15
         let range = whole ? -3.0...max(3, total - tr.duration + 3) : 0.0...max(0, total - tr.duration)
+        if let w = Lyrics.alignWords(lines, heard: tr.heardWords, recordingSeconds: tr.duration, range: range) {
+            if w.trustworthy { return w.offset }
+            if w.mismatch { return nil }
+            // enough was heard to know the words don't settle it: the voice-timing match is less
+            // reliable than that, so only a whole song falls back (to starting with the track)
+            if w.heard >= 8 { return whole ? 0 : nil }
+        }
         let a = Lyrics.align(lines, heard: tr.heardMelody, recordingSeconds: tr.duration, range: range)
         if let a, a.trustworthy { return a.offset }
         return whole ? 0 : nil
@@ -825,7 +847,7 @@ struct AddSongView: View {
     private func startListening(_ t: CatalogTrack) {
         player.stop(); chordPlayer.stop()
         wholeError = nil
-        listener.start(songSeconds: t.trackTimeMillis.map { Double($0) / 1000 }) { result in useWhole(result, fromFile: false, file: nil, t) }
+        listener.start(songSeconds: t.trackTimeMillis.map { Double($0) / 1000 }, language: lyricsLanguage) { result in useWhole(result, fromFile: false, file: nil, t) }
     }
 
     private func chooseAudioFile(_ t: CatalogTrack) {
@@ -836,9 +858,11 @@ struct AddSongView: View {
         panel.allowsMultipleSelection = false
         panel.message = "Choose an audio file of “\(t.trackName)”"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let language = lyricsLanguage
         Task {
             do {
-                let result = try await Task.detached(priority: .userInitiated) { try Transcriber.analyze(url: url) }.value
+                var result = try await Task.detached(priority: .userInitiated) { try Transcriber.analyze(url: url) }.value
+                result.heardWords = await WordListener.words(url: url, language: language)
                 await MainActor.run { useWhole(result, fromFile: true, file: url, t) }
             } catch {
                 await MainActor.run {

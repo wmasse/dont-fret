@@ -37,6 +37,8 @@ struct Transcription {
     var songZeroBeat: Double = 0
     /// The tune (usually the lead vocal), in seconds of the recording.
     var heardMelody: [HeardNote] = []
+    /// Sung words picked out by the speech recogniser (filled in after the analysis; see `WordListener`).
+    var heardWords: [HeardWord] = []
 
     var keyName: String {
         let flat = Theory.flatKeys.contains(minorKey ? (keyRoot + 3) % 12 : keyRoot)
