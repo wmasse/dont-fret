@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac App Store build: sandboxed, with only what the app needs -->
+	<key>com.apple.application-identifier</key>
+	<string>9A9HR6WT4K.app.dontfret.guitar</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>9A9HR6WT4K</string>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- song search, chord charts, previews and album art -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- listening to your guitar, the tuner, Studio recording -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Studio video recording -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- import/export chord charts, backups and Studio exports through Open/Save panels -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>

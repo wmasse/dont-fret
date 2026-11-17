@@ -80,6 +80,14 @@ struct ChartMatch {
 
 enum ChordCharts {
 
+    /// The Mac App Store build (compiled with -D APPSTORE) doesn't look up Songsterr charts;
+    /// it works chords out from the recording instead.
+    #if APPSTORE
+    static let enabled = false
+    #else
+    static let enabled = true
+    #endif
+
     // MARK: lookup
 
     struct Hit: Hashable { var songId: Int; var title: String; var artist: String; var hasChords: Bool }
@@ -183,6 +191,7 @@ enum ChordCharts {
 
     /// Finds the chart for a song: same title, same artist, has chords; skips covers and "easy" versions.
     static func find(title: String, artist: String) async -> ChordChart? {
+        guard enabled else { return nil }
         let wanted = normTitle(title), who = normArtist(artist)
         guard !wanted.isEmpty else { return nil }
         var tried = Set<Int>()
