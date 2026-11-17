@@ -15,31 +15,58 @@ To make a downloadable release (universal Apple Silicon + Intel app in a DMG):
 scripts/release.sh 1.1
 ```
 
+## How the code is organized
+
+The app is a single Swift module, so folders don't limit what code can see. They show where something belongs: shared layers first, then one folder per screen.
+
+| Folder | What lives there |
+|---|---|
+| `Model/` | Chord theory, songs, ChordPro, and progress (XP, achievements and the `ProgressStore` that saves them). No views. |
+| `Audio/Guitar/` | The synthesized guitar, from the musical API (`GuitarSynth`) down to the real-time engine and DSP, plus `ProgressionPlayer`. |
+| `Audio/Input/` | The microphone (`AudioEngine`: detection, tuner, onsets) and the system-audio listener. |
+| `Analysis/` | Offline understanding of recordings: chords, melody, lyrics, chord-chart matching. |
+| `Services/` | Network lookups and their caches: the music catalog and album art. |
+| `DesignSystem/` | Theme, colours, fonts and the shared components every screen uses. |
+| `Features/<Screen>/` | One folder per sidebar destination: its views and the models only it uses. |
+| `App/` | The `@main` app, root navigation, `AppState`, and SwiftUI plumbing (`StateModel`). |
+
+Every source file name must be unique, because `build.sh` compiles a flat snapshot of the folders.
+
+### State
+
+Models that views watch use the Observation framework (`@Observable`), so a view redraws only when a property it actually read changes. This matters here: the microphone engine updates its level, chroma and pitch ~23 times a second, and the play screen's clock ticks at 120 Hz.
+
+- App-wide models (`AppState`, `ProgressStore`, `AudioEngine`) are injected once at the root with `.environment(_:)` and read with `@Environment(Type.self)`. Sheets get them passed again explicitly.
+- A view that owns a model creates it with `@State`. When the model's `init` is expensive or touches hardware (`StudioRecorder`, `StudioPlayback`), use `@StateModel` instead, which builds it only once (`@State` builds a fresh instance every time the parent redraws, then throws it away).
+- A child view that is handed a model takes it as a plain `let`/`var`, or `@Bindable` when it needs `$model.property` bindings.
+- Inside an `@Observable` class, state that views don't display (timers, Combine subscriptions, callbacks, DSP buffers) is marked `@ObservationIgnored`. That keeps redraws to what is on screen and keeps observation bookkeeping off the audio thread.
+- Fast-moving values get their own small object, so only the views that move redraw (`PlayClock` for the play screen's playhead).
+
 ## What's inside
 
 | Area | File |
 |---|---|
-| App shell, sidebar, onboarding, settings, themes | `Sources/App/DontFretApp.swift`, `RootView.swift`, `Theme.swift` |
-| Chord theory, 90+ chord shapes, easy/alt voicings, voicing generator, transposing | `Sources/App/Music.swift` |
-| 80+ songs/lessons (chords and single-note riffs), strum patterns, per-section strums | `Sources/App/Songs.swift` |
-| ChordPro / plain-text import and export | `Sources/App/ChordPro.swift` |
-| Mic chord & note detection, muted-string hints, YIN tuner, strum onsets & direction, input devices | `Sources/App/Audio.swift` |
-| Guitar sound: strums, picking, fingerstyle, techniques (the musical API) | `Sources/App/Synth.swift` |
-| Guitar engine: modal steel strings, sympathetic resonance, pickups, amp | `Sources/App/GuitarEngine.swift` |
-| Guitar body, microphones and room (synthesized impulse responses, calibration) | `Sources/App/GuitarBody.swift` |
-| DSP: partitioned convolution, filters, limiter, oversampling | `Sources/App/GuitarDSP.swift` |
+| App shell, sidebar, onboarding, settings, themes | `Sources/App/App/DontFretApp.swift`, `App/RootView.swift`, `DesignSystem/Theme.swift` |
+| Chord theory, 90+ chord shapes, easy/alt voicings, voicing generator, transposing | `Sources/App/Model/Music.swift` |
+| 80+ songs/lessons (chords and single-note riffs), strum patterns, per-section strums | `Sources/App/Model/Songs.swift` |
+| ChordPro / plain-text import and export | `Sources/App/Model/ChordPro.swift` |
+| Mic chord & note detection, muted-string hints, YIN tuner, strum onsets & direction, input devices | `Sources/App/Audio/Input/Audio.swift` |
+| Guitar sound: strums, picking, fingerstyle, techniques (the musical API) | `Sources/App/Audio/Guitar/Synth.swift` |
+| Guitar engine: modal steel strings, sympathetic resonance, pickups, amp | `Sources/App/Audio/Guitar/GuitarEngine.swift` |
+| Guitar body, microphones and room (synthesized impulse responses, calibration) | `Sources/App/Audio/Guitar/GuitarBody.swift` |
+| DSP: partitioned convolution, filters, limiter, oversampling | `Sources/App/Audio/Guitar/GuitarDSP.swift` |
 | Sound lab: offline rendering and measurement against studio recordings | `Tests/SoundLab.swift`, `scripts/soundlab/` |
-| Riffs & Solos: 18 riffs, solos, melodies and exercises with TAB, techniques, playback and mic practice | `Sources/App/Riffs.swift` |
-| Studio: takes store, audio/video recorder, live mixer with effects, offline mixdown, video export | `Sources/App/StudioEngine.swift` |
-| Studio pages: record panel, takes, editor with trim/layers/sound/export | `Sources/App/StudioView.swift` |
-| Play Along / Wait Mode / Auto-Scroll sheet, section loops with auto speed-up | `Sources/App/Game.swift` |
-| Chord Trainer (spaced review), 1-Minute Changes, Strum Trainer | `Sources/App/Practice.swift` |
-| Song library, song page (key & capo, tricky changes, history), song editor | `Sources/App/SongsView.swift` |
-| Melody from a recording: pitch tracking, notes on the song's beats, fret positions, the melody strip | `Sources/App/Melody.swift`, `MelodyView.swift` |
-| Time-synced lyrics: LRCLIB lookup, lining up with the recording, karaoke display | `Sources/App/Lyrics.swift`, `LyricsView.swift` |
-| Mic calibration, timing calibration, backup & restore | `Sources/App/Calibration.swift` |
-| Tuner, progress, achievements | `Sources/App/TunerView.swift` |
-| Progress, XP, skill levels, learning paths, achievements, daily challenge | `Sources/App/Store.swift` |
+| Riffs & Solos: 18 riffs, solos, melodies and exercises with TAB, techniques, playback and mic practice | `Sources/App/Features/Riffs/Riffs.swift` |
+| Studio: takes store, audio/video recorder, live mixer with effects, offline mixdown, video export | `Sources/App/Features/Studio/StudioEngine.swift` |
+| Studio pages: record panel, takes, editor with trim/layers/sound/export | `Sources/App/Features/Studio/StudioView.swift` |
+| Play Along / Wait Mode / Auto-Scroll sheet, section loops with auto speed-up | `Sources/App/Features/Play/Game.swift` |
+| Chord Trainer (spaced review), 1-Minute Changes, Strum Trainer | `Sources/App/Features/Practice/Practice.swift` |
+| Song library, song page (key & capo, tricky changes, history), song editor | `Sources/App/Features/Songs/SongsView.swift` |
+| Melody from a recording: pitch tracking, notes on the song's beats, fret positions, the melody strip | `Sources/App/Analysis/Melody.swift`, `MelodyView.swift` |
+| Time-synced lyrics: LRCLIB lookup, lining up with the recording, karaoke display | `Sources/App/Analysis/Lyrics.swift`, `LyricsView.swift` |
+| Mic calibration, timing calibration, backup & restore | `Sources/App/Features/Settings/Calibration.swift` |
+| Tuner, progress, achievements | `Sources/App/Features/Tuner/TunerView.swift` |
+| Progress, XP, skill levels, learning paths, achievements, daily challenge | `Sources/App/Model/Store.swift` |
 
 Progress is saved to `~/Library/Application Support/DontFret/progress.json`. **Settings → Back Up** writes the same data to any file — save it in iCloud Drive to move it between Macs.
 
@@ -55,11 +82,11 @@ Built-in songs use simplified, beginner-friendly progressions and aren't synced 
 
 You can listen to the preview with the chords lighting up, fix chords in the visual editor, or paste a chord chart from any website instead. Every song page has **Hear the Chords** to play the chords in order at the song's tempo, in its playing style: strummed with the song's pattern, fingerpicked, bass-note-and-strum, palm-muted power chords or reggae chops. For searched songs the strum pattern is detected from the recording.
 
-`Sources/App/Transcriber.swift` (analysis), `SongFinder.swift` (catalog search, media), `AddSongView.swift` (the flow), `ProgressionPlayer.swift` (playback).
+`Sources/App/Analysis/Transcriber.swift` (analysis), `SongFinder.swift` (catalog search, media), `AddSongView.swift` (the flow), `ProgressionPlayer.swift` (playback).
 
 ### Melody
 
-Every analysis also picks out the song's tune, usually the lead vocal (`MelodyExtractor` in `Sources/App/Melody.swift`):
+Every analysis also picks out the song's tune, usually the lead vocal (`MelodyExtractor` in `Sources/App/Analysis/Melody.swift`):
 
 1. A 46 ms spectrum every 10 ms. For stereo audio (previews, audio files and the whole-song listen all keep a side channel), each bin is weighted by how centred it is in the stereo picture, `(|M|² − |S|²) / (|M|² + |S|²)`, because lead vocals are usually mixed in the middle.
 2. Harmonic-sum pitch salience over G2–D6 in fifth-of-a-semitone steps, favouring a singer's range and pitches whose own fundamental is present.
@@ -71,7 +98,7 @@ The melody is stored on the song (`Song.melody`, relative to the capo like singl
 
 ### Lyrics
 
-Searched songs get time-synced lyrics from [LRCLIB](https://lrclib.net) (`Sources/App/Lyrics.swift`): a free, open lyrics database whose public API needs no account or key. Only the title, artist and track length are sent, with a `User-Agent` naming the app as LRCLIB asks, and a `Retry-After` is honoured. The exact `/api/get` lookup is tried first, then `/api/search` on title and artist for a release whose length is within 5 s.
+Searched songs get time-synced lyrics from [LRCLIB](https://lrclib.net) (`Sources/App/Analysis/Lyrics.swift`): a free, open lyrics database whose public API needs no account or key. Only the title, artist and track length are sent, with a `User-Agent` naming the app as LRCLIB asks, and a `Retry-After` is honoured. The exact `/api/get` lookup is tried first, then `/api/search` on title and artist for a release whose length is within 5 s.
 
 LRC times are seconds into the full track, so the app has to work out where its recording starts in the track before it can use them:
 
@@ -91,7 +118,7 @@ Each chord fills one bar unless you write `Chord:beats` (half beats allowed, e.g
 
 ## Riffs & Solos
 
-Each riff is written in a compact TAB shorthand in `RiffLibrary` (`Sources/App/Riffs.swift`):
+Each riff is written in a compact TAB shorthand in `RiffLibrary` (`Sources/App/Features/Riffs/Riffs.swift`):
 
 ```
 E0+A2:1 E0m E0m E3 | G7h G5p B8b:1 e12~:2 r:1 D7/
@@ -132,7 +159,7 @@ The guitar is synthesized, not sampled, so it can play any chord, voicing, capo 
 
 ```bash
 # fast renderer (engine files only, ~10 s to build)
-swiftc -O -parse-as-library Sources/App/GuitarDSP.swift Sources/App/GuitarBody.swift Sources/App/GuitarEngine.swift scripts/soundlab/RenderEvents.swift -o build/render-events
+swiftc -O -parse-as-library Sources/App/Audio/Guitar/GuitarDSP.swift Sources/App/Audio/Guitar/GuitarBody.swift Sources/App/Audio/Guitar/GuitarEngine.swift scripts/soundlab/RenderEvents.swift -o build/render-events
 # measure the real guitars: strum timing, inharmonicity, partial decay, attack, long-term spectrum
 python3 -I scripts/soundlab/measure.py <annotation dir> <mic dir>
 # re-synthesize 20 performances note for note and score them (add --legacy <renderer> to compare another build)
@@ -161,7 +188,7 @@ Known gap: attacks are ~1.3× brighter than the recordings relative to their sus
 ## Detection self-test
 
 ```bash
-swiftc -D SELFTEST -parse-as-library -swift-version 5 -O Sources/App/*.swift Tests/*.swift -o build/selftest && build/selftest
+./build.sh selftest && build/selftest
 ```
 
 The test synthesizes every chord shape and single note and runs them through the recognizer. Current results:

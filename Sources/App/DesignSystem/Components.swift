@@ -305,7 +305,7 @@ enum StrumGrade {
 // MARK: - Song card
 
 struct SongCard: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     var song: Song
     @State private var hover = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -375,7 +375,7 @@ struct LevelMeter: View {
 }
 
 struct MicStatusView: View {
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(AudioEngine.self) var audio
     var body: some View {
         HStack(spacing: 10) {
             switch audio.permission {

@@ -217,56 +217,57 @@ enum AudioDevices {
 
 // MARK: - Engine
 
-final class AudioEngine: ObservableObject {
+@Observable
+final class AudioEngine {
     static let shared = AudioEngine()
 
-    @Published var permission: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-    @Published private(set) var isListening = false
-    @Published private(set) var level: Float = 0
-    @Published private(set) var chroma = [Float](repeating: 0, count: 12)
-    @Published private(set) var detected: ChordMatch?
-    @Published private(set) var candidates: [ChordMatch] = []
-    @Published private(set) var pitch: Double?
-    @Published var errorMessage: String?
-    @Published private(set) var deviceName = "System default"
+    var permission: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    private(set) var isListening = false
+    private(set) var level: Float = 0
+    private(set) var chroma = [Float](repeating: 0, count: 12)
+    private(set) var detected: ChordMatch?
+    private(set) var candidates: [ChordMatch] = []
+    private(set) var pitch: Double?
+    var errorMessage: String?
+    private(set) var deviceName = "System default"
 
     let frames = PassthroughSubject<AnalysisFrame, Never>()
     let onsets = PassthroughSubject<Onset, Never>()
 
     private let engine = AVAudioEngine()
-    private var users = 0
+    @ObservationIgnored private var users = 0
     private let n = 8192
     private let hop = 2048
-    private var ring: [Float]
-    private var ringWrite = 0
-    private var sinceHop = 0
-    private var sampleRate: Double = 48000
-    private var fftSetup: FFTSetup?
-    private var window: [Float]
-    private var smoothChroma = [Float](repeating: 0, count: 12)
-    private var pendingTop: String?
-    private var pendingCount = 0
-    private var pitchHistory: [Double] = []
-    private var configObserver: NSObjectProtocol?
+    @ObservationIgnored private var ring: [Float]
+    @ObservationIgnored private var ringWrite = 0
+    @ObservationIgnored private var sinceHop = 0
+    @ObservationIgnored private var sampleRate: Double = 48000
+    @ObservationIgnored private var fftSetup: FFTSetup?
+    @ObservationIgnored private var window: [Float]
+    @ObservationIgnored private var smoothChroma = [Float](repeating: 0, count: 12)
+    @ObservationIgnored private var pendingTop: String?
+    @ObservationIgnored private var pendingCount = 0
+    @ObservationIgnored private var pitchHistory: [Double] = []
+    @ObservationIgnored private var configObserver: NSObjectProtocol?
 
     // calibration & self-sound filtering (shared with the tap thread)
     private let lock = NSLock()
-    private var gate: Float = 0.006
-    private var clickBleed: Float = 0
-    private var deviceUID: String?
-    private var suppressUntil: Double = 0
-    private var clickTimes: [Double] = []
-    private var rmsHistory: [(Double, Float)] = []
+    @ObservationIgnored private var gate: Float = 0.006
+    @ObservationIgnored private var clickBleed: Float = 0
+    @ObservationIgnored private var deviceUID: String?
+    @ObservationIgnored private var suppressUntil: Double = 0
+    @ObservationIgnored private var clickTimes: [Double] = []
+    @ObservationIgnored private var rmsHistory: [(Double, Float)] = []
 
     // onset & direction state (tap thread only)
-    private var envSlow: Float = 0
-    private var prevBlock: Float = 0
-    private var lastOnset: Double = 0
-    private var lowState: Float = 0
-    private var highBase: Float = 0
-    private var bandBlocks: [(low: Float, high: Float)] = []
-    private var blockIndex = 0
-    private var pendingOnsets: [(time: Double, block: Int)] = []
+    @ObservationIgnored private var envSlow: Float = 0
+    @ObservationIgnored private var prevBlock: Float = 0
+    @ObservationIgnored private var lastOnset: Double = 0
+    @ObservationIgnored private var lowState: Float = 0
+    @ObservationIgnored private var highBase: Float = 0
+    @ObservationIgnored private var bandBlocks: [(low: Float, high: Float)] = []
+    @ObservationIgnored private var blockIndex = 0
+    @ObservationIgnored private var pendingOnsets: [(time: Double, block: Int)] = []
 
     private init() {
         ring = [Float](repeating: 0, count: n)
@@ -588,23 +589,28 @@ final class AudioEngine: ObservableObject {
 
     private func publish(frame: AnalysisFrame, ranked: [ChordMatch], f0: Double?) {
         let lvl = min(1, max(0, (20 * log10(max(frame.rms, 1e-5)) + 60) / 50))
-        level = level * 0.5 + lvl * 0.5
-        chroma = frame.chroma
-        candidates = ranked
+        // Only assign values that changed: each assignment redraws every view reading that property,
+        // and in silence most of these stay put frame after frame.
+        let smoothed = level * 0.5 + lvl * 0.5
+        let newLevel = smoothed < 1e-3 ? 0 : smoothed  // settle on exactly 0 in silence
+        if newLevel != level { level = newLevel }
+        if frame.chroma != chroma { chroma = frame.chroma }
+        if ranked != candidates { candidates = ranked }
         if let top = ranked.first, top.score > 0.68 {
             if pendingTop == top.id { pendingCount += 1 } else { pendingTop = top.id; pendingCount = 1 }
-            if pendingCount >= 2 { detected = top }
+            if pendingCount >= 2, detected != top { detected = top }
         } else if !frame.hasSound {
-            detected = nil
+            if detected != nil { detected = nil }
             pendingTop = nil
         }
         if let f0 {
             pitchHistory.append(f0)
             if pitchHistory.count > 5 { pitchHistory.removeFirst() }
-            pitch = pitchHistory.sorted()[pitchHistory.count / 2]
+            let median = pitchHistory.sorted()[pitchHistory.count / 2]
+            if median != pitch { pitch = median }
         } else if !frame.hasSound {
             pitchHistory.removeAll()
-            pitch = nil
+            if pitch != nil { pitch = nil }
         }
         frames.send(frame)
     }

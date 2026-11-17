@@ -5,15 +5,16 @@ import QuartzCore
 // MARK: - Shared listening helper
 
 /// Listens for one target chord at a time and fires when it's held.
-final class ChordListener: ObservableObject {
-    @Published var holdProgress: Double = 0
-    @Published var target: String? { didSet { hint = nil; fails = 0 } }
-    @Published var hint: String?
-    var strictness: Strictness = .normal
-    var onHit: (() -> Void)?
-    private var frames = 0
-    private var fails = 0
-    private var bag = Set<AnyCancellable>()
+@Observable
+final class ChordListener {
+    var holdProgress: Double = 0
+    var target: String? { didSet { hint = nil; fails = 0 } }
+    var hint: String?
+    @ObservationIgnored var strictness: Strictness = .normal
+    @ObservationIgnored var onHit: (() -> Void)?
+    @ObservationIgnored private var frames = 0
+    @ObservationIgnored private var fails = 0
+    @ObservationIgnored private var bag = Set<AnyCancellable>()
 
     func start() {
         bag.removeAll()
@@ -44,9 +45,9 @@ final class ChordListener: ObservableObject {
 // MARK: - Chord Trainer
 
 struct ChordTrainerView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
 
     enum Phase { case setup, running, done }
     @State private var phase: Phase = .setup
@@ -60,7 +61,7 @@ struct ChordTrainerView: View {
     @State private var results: [(chord: String, time: Double?)] = []
     @State private var flash: Color? = nil
     @State private var revealed = false
-    @StateObject private var listener = ChordListener()
+    @State private var listener = ChordListener()
     @State private var keys = KeyMonitor()
     @State private var sessionStart = Date()
 
@@ -92,7 +93,7 @@ struct ChordTrainerView: View {
     private var setup: some View {
         Page {
             PageHeader(title: "Chord Trainer", subtitle: "A chord flashes up — play it as fast as you can. Weak chords come up more often.") {
-                InputModePicker(mode: $app.inputMode)
+                InputModePicker(mode: Bindable(app).inputMode)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 14)], spacing: 14) {
                 ForEach(decks, id: \.id) { d in
@@ -323,9 +324,9 @@ struct ChordTrainerView: View {
 // MARK: - 1-Minute Changes
 
 struct ChangesView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
     enum Phase { case setup, countdown, running, done }
     @State private var phase: Phase = .setup
     @State private var a = "G"
@@ -336,7 +337,7 @@ struct ChangesView: View {
     @State private var endTime = Date()
     @State private var countdown = 3
     @State private var wasBest = false
-    @StateObject private var listener = ChordListener()
+    @State private var listener = ChordListener()
     @State private var keys = KeyMonitor()
     @State private var ticker: Timer?
 
@@ -360,7 +361,7 @@ struct ChangesView: View {
     private var setup: some View {
         Page {
             PageHeader(title: "1-Minute Changes", subtitle: "Switch between two chords as many times as you can. The fastest way to build muscle memory.") {
-                InputModePicker(mode: $app.inputMode)
+                InputModePicker(mode: Bindable(app).inputMode)
             }
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(title: "Suggested pairs for \(progress.skill.title.lowercased()) players")
@@ -553,33 +554,34 @@ struct ChangesView: View {
 
 // MARK: - Strum Trainer
 
-final class StrumSession: ObservableObject {
-    @Published var pattern: StrumPattern
-    @Published var bpm: Double
-    @Published var running = false
-    @Published var slot: Int? = nil
-    @Published var grades: [Int: StrumGrade] = [:]
-    @Published var lastBarAccuracy: Double? = nil
-    @Published var bars = 0
-    @Published var totalScore = 0.0
-    @Published var totalPossible = 0.0
-    @Published var avgOffsetMs: Double = 0
-    @Published var lastGrade: StrumGrade?
-    @Published var perfectBarsInRow = 0
-    var demo = false
-    var metronome = true
-    var chord: ChordShape?
-    var window: Double = 0.12
-    var useMic = true
-    var latency: Double = 0          // seconds to subtract from detected strum times
-    var checkDirection = false
+@Observable
+final class StrumSession {
+    var pattern: StrumPattern
+    var bpm: Double
+    var running = false
+    var slot: Int? = nil
+    var grades: [Int: StrumGrade] = [:]
+    var lastBarAccuracy: Double? = nil
+    var bars = 0
+    var totalScore = 0.0
+    var totalPossible = 0.0
+    var avgOffsetMs: Double = 0
+    var lastGrade: StrumGrade?
+    var perfectBarsInRow = 0
+    @ObservationIgnored var demo = false
+    @ObservationIgnored var metronome = true
+    @ObservationIgnored var chord: ChordShape?
+    @ObservationIgnored var window: Double = 0.12
+    @ObservationIgnored var useMic = true
+    @ObservationIgnored var latency: Double = 0          // seconds to subtract from detected strum times
+    @ObservationIgnored var checkDirection = false
 
-    private var t0: Double = 0
-    private var timer: Timer?
-    private var lastSlotGlobal = Int.min
-    private var bag = Set<AnyCancellable>()
-    private var offsets: [Double] = []
-    private(set) var activeSeconds: Double = 0
+    @ObservationIgnored private var t0: Double = 0
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var lastSlotGlobal = Int.min
+    @ObservationIgnored private var bag = Set<AnyCancellable>()
+    @ObservationIgnored private var offsets: [Double] = []
+    @ObservationIgnored private(set) var activeSeconds: Double = 0
 
     init(pattern: StrumPattern, bpm: Double) { self.pattern = pattern; self.bpm = bpm }
 
@@ -685,10 +687,10 @@ final class StrumSession: ObservableObject {
 }
 
 struct StrumTrainerView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
-    @StateObject private var session = StrumSession(pattern: StrumPattern.library[2], bpm: 80)
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
+    @State private var session = StrumSession(pattern: StrumPattern.library[2], bpm: 80)
     @State private var chordName = "G"
     @State private var demo = false
     @State private var metronome = true
@@ -698,7 +700,7 @@ struct StrumTrainerView: View {
     var body: some View {
         Page {
             PageHeader(title: "Strum Trainer", subtitle: "Pick a pattern, strum along with the click, and get timing feedback on every stroke.") {
-                InputModePicker(mode: $app.inputMode).disabled(session.running)
+                InputModePicker(mode: Bindable(app).inputMode).disabled(session.running)
             }
             HStack(alignment: .top, spacing: 20) {
                 patternList.frame(width: 260)

@@ -3,7 +3,7 @@ import SwiftUI
 /// The song's melody as a scrolling strip, bar by bar: each note sits at its pitch and length,
 /// labelled with where to fret it. Follows along while the song plays.
 struct MelodyCard: View {
-    @ObservedObject var player: ProgressionPlayer
+    var player: ProgressionPlayer
     var song: Song
     var tempo: Double = 1
 

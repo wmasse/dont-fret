@@ -3,24 +3,25 @@ import SwiftUI
 
 /// Plays a song's chords in order with its strumming pattern, so you can hear how it should sound.
 @MainActor
-final class ProgressionPlayer: ObservableObject {
-    @Published private(set) var playing = false
+@Observable
+final class ProgressionPlayer {
+    private(set) var playing = false
     /// Index into `song.events` of the chord sounding now.
-    @Published private(set) var current: Int?
+    private(set) var current: Int?
     /// (section index, chord position within that section) of the chord sounding now.
-    @Published private(set) var position: (section: Int, token: Int)?
+    private(set) var position: (section: Int, token: Int)?
     /// Play the song's melody (when it has one) on top of the chords.
-    @Published var melodyOn = true
+    var melodyOn = true
     /// Index into `song.melody` of the melody note sounding now.
-    @Published private(set) var melodyNote: Int?
+    private(set) var melodyNote: Int?
     /// Song beat playback started from, when it started, and seconds per beat — so views can work out
     /// where the song is between chords (lyrics follow this).
-    private(set) var startBeat: Double = 0
-    private(set) var startedAt: Date?
-    private(set) var beatSeconds: Double = 0.5
-    private var task: Task<Void, Never>?
-    private var melodyTask: Task<Void, Never>?
-    private var chordVolume: Float?
+    @ObservationIgnored private(set) var startBeat: Double = 0
+    @ObservationIgnored private(set) var startedAt: Date?
+    @ObservationIgnored private(set) var beatSeconds: Double = 0.5
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var melodyTask: Task<Void, Never>?
+    @ObservationIgnored private var chordVolume: Float?
 
     func toggle(_ song: Song, tempo: Double = 1, from start: Int = 0) {
         playing ? stop() : play(song, tempo: tempo, from: start)
@@ -230,7 +231,7 @@ final class ProgressionPlayer: ObservableObject {
 
 /// A play/stop button for hearing a song's chords in order.
 struct HearChordsButton: View {
-    @ObservedObject var player: ProgressionPlayer
+    var player: ProgressionPlayer
     var song: Song
     var tempo: Double = 1
     var label = "Hear the Chords"

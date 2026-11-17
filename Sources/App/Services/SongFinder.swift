@@ -125,11 +125,12 @@ enum SongMedia {
 }
 
 /// Plays a preview clip and reports the playhead so the chord chart can follow along.
-final class PreviewPlayer: ObservableObject {
-    @Published private(set) var playing = false
-    @Published private(set) var time: Double = 0
-    private var player: AVAudioPlayer?
-    private var timer: Timer?
+@Observable
+final class PreviewPlayer {
+    private(set) var playing = false
+    private(set) var time: Double = 0
+    @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var timer: Timer?
 
     func toggle(_ url: URL) { playing ? stop() : play(url) }
 

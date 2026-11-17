@@ -6,16 +6,16 @@ import AppKit
 #endif
 struct DontFretApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var app = AppState()
-    @StateObject private var progress = ProgressStore()
-    @StateObject private var audio = AudioEngine.shared
+    @State private var app = AppState()
+    @State private var progress = ProgressStore()
+    @State private var audio = AudioEngine.shared
 
     var body: some Scene {
         WindowGroup("Don’t Fret") {
             RootView()
-                .environmentObject(app)
-                .environmentObject(progress)
-                .environmentObject(audio)
+                .environment(app)
+                .environment(progress)
+                .environment(audio)
                 .frame(minWidth: 1040, minHeight: 700)
                 .preferredColorScheme(Theme.colorScheme)
                 .tint(Theme.accent)
@@ -116,20 +116,21 @@ struct GameConfig: Identifiable, Equatable {
     var loopSection: Int? = nil
 }
 
-final class AppState: ObservableObject {
-    @Published var selection: SidebarItem = .home
-    @Published var activeGame: GameConfig?
-    @Published var trainerPreset: [String]? = nil
-    @Published var strumPreset: String? = nil
-    @Published var strumChordPreset: String? = nil
-    @Published var changesPreset: (String, String)? = nil
-    @Published var songPath: [Song] = []
-    @Published var inputMode: InputMode = .mic
+@Observable
+final class AppState {
+    var selection: SidebarItem = .home
+    var activeGame: GameConfig?
+    var trainerPreset: [String]? = nil
+    var strumPreset: String? = nil
+    var strumChordPreset: String? = nil
+    var changesPreset: (String, String)? = nil
+    var songPath: [Song] = []
+    var inputMode: InputMode = .mic
     // onboarding draft
-    @Published var obStep = 0
-    @Published var obName = ""
-    @Published var obSkill: SkillLevel = .beginner
-    @Published var obGenres: Set<String> = []
+    var obStep = 0
+    var obName = ""
+    var obSkill: SkillLevel = .beginner
+    var obGenres: Set<String> = []
 
     func play(_ song: Song, mode: PlayMode, tempo: Double = 1.0, metronome: Bool = true, loopSection: Int? = nil) {
         withAnimation(.easeOut(duration: 0.25)) {

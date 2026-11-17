@@ -18,8 +18,8 @@ struct Tuning: Identifiable, Hashable {
 }
 
 struct TunerView: View {
-    @EnvironmentObject var audio: AudioEngine
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AudioEngine.self) var audio
+    @Environment(ProgressStore.self) var progress
     @State private var tuning = Tuning.all[0]
     @State private var lockedString: Int? = nil
     @State private var counted = false
@@ -223,8 +223,8 @@ struct Gauge: View {
 // MARK: - Progress
 
 struct StatsView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
 
     var body: some View {
         let days = progress.lastDays(7)

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 // MARK: - Settings: microphone, timing, backup
 
 struct MicSettingsCard: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     @State private var devices: [InputDevice] = []
     @State private var output: OutputKind = .speakers
     @State private var showRoom = false
@@ -56,8 +56,8 @@ struct MicSettingsCard: View {
         }
         .card(padding: 22)
         .onAppear { devices = AudioDevices.inputDevices(); output = AudioDevices.outputKind() }
-        .sheet(isPresented: $showRoom) { RoomCalibrationSheet().environmentObject(progress) }
-        .sheet(isPresented: $showLatency) { LatencyCalibrationSheet().environmentObject(progress) }
+        .sheet(isPresented: $showRoom) { RoomCalibrationSheet().environment(progress) }
+        .sheet(isPresented: $showLatency) { LatencyCalibrationSheet().environment(progress) }
     }
 
     private var outputName: String {
@@ -93,7 +93,7 @@ struct MicSettingsCard: View {
 }
 
 struct BackupCard: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     @State private var message: String?
 
     var body: some View {
@@ -136,8 +136,8 @@ struct BackupCard: View {
 // MARK: - Room calibration
 
 struct RoomCalibrationSheet: View {
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
     @Environment(\.dismiss) var dismiss
     enum Step { case intro, noise, bleed, done }
     @State private var step: Step = .intro
@@ -202,8 +202,8 @@ struct RoomCalibrationSheet: View {
 // MARK: - Latency calibration
 
 struct LatencyCalibrationSheet: View {
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
     @Environment(\.dismiss) var dismiss
     @State private var input: InputMode = .mic
     @State private var running = false

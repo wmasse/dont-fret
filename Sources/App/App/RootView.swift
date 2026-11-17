@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
 
     var body: some View {
         ZStack {
@@ -36,7 +36,7 @@ struct RootView: View {
 }
 
 struct ToastStack: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     var body: some View {
         VStack(spacing: 8) {
@@ -84,8 +84,8 @@ struct Logo: View {
 }
 
 struct SidebarView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
 
     private var selection: Binding<SidebarItem?> {
         Binding(get: { app.selection }, set: { if let v = $0 { app.selection = v; if v == .songs { app.songPath = [] } } })
@@ -149,13 +149,13 @@ struct SidebarView: View {
 }
 
 struct DetailView: View {
-    @EnvironmentObject var app: AppState
+    @Environment(AppState.self) var app
     var body: some View {
         Group {
             switch app.selection {
             case .home: HomeView()
             case .songs:
-                NavigationStack(path: $app.songPath) {
+                NavigationStack(path: Bindable(app).songPath) {
                     SongLibraryView()
                         .navigationDestination(for: Song.self) { SongDetailView(song: $0) }
                 }
@@ -194,12 +194,12 @@ struct Page<Content: View>: View {
 // MARK: - Onboarding
 
 struct OnboardingView: View {
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var app: AppState
+    @Environment(ProgressStore.self) var progress
+    @Environment(AppState.self) var app
     @State private var themeID = Theme.palette.id
     // Draft lives in AppState so it survives the full re-render a theme change triggers.
     private var step: Int { get { app.obStep } nonmutating set { app.obStep = newValue } }
-    private var name: Binding<String> { $app.obName }
+    private var name: Binding<String> { Bindable(app).obName }
     private var skill: SkillLevel { get { app.obSkill } nonmutating set { app.obSkill = newValue } }
     private var genres: Set<String> { get { app.obGenres } nonmutating set { app.obGenres = newValue } }
 
@@ -433,7 +433,7 @@ struct ThemeGrid: View {
 // MARK: - Settings
 
 struct SettingsView: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     @State private var themeID = Theme.palette.id
     @State private var confirmReset = false
 

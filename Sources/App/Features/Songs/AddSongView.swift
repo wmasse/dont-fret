@@ -3,8 +3,8 @@ import UniformTypeIdentifiers
 
 /// Search any song → the app listens to its preview and writes the chords → check and add.
 struct AddSongView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
     @Environment(\.dismiss) var dismiss
 
     var initialQuery = ""
@@ -23,8 +23,8 @@ struct AddSongView: View {
     @State private var searching = false
     @State private var searchError: String?
     @State private var searchTask: Task<Void, Never>?
-    @StateObject private var player = PreviewPlayer()
-    @StateObject private var chordPlayer = ProgressionPlayer()
+    @State private var player = PreviewPlayer()
+    @State private var chordPlayer = ProgressionPlayer()
 
     // analysis
     @State private var step = 0
@@ -42,7 +42,7 @@ struct AddSongView: View {
     @State private var wholeFromFile = false
     @State private var wholeFile: URL?
     @State private var wholeError: String?
-    @StateObject private var listener = WholeSongListener()
+    @State private var listener = WholeSongListener()
     /// Time-synced lyrics from LRCLIB (nil: not looked up yet).
     @State private var lyricsFound: Lyrics.Lookup?
     /// Where the analysed recording starts in the full track, when the lyrics could be lined up with it.
@@ -68,7 +68,7 @@ struct AddSongView: View {
                         SongEditorView(existing: d, embedded: true) { saved in
                             if let saved { finish(saved) } else { phase = transcription == nil ? .search : (lastTrack.map { .review($0) } ?? .search) }
                         }
-                        .environmentObject(progress)
+                        .environment(progress)
                     }
                 }
             }

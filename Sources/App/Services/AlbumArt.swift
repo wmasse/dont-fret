@@ -5,17 +5,18 @@ import AppKit
 /// (the same free, key-less search Add Any Song uses) and cached in the Artwork folder.
 /// Lessons and exercises keep their generated artwork.
 @MainActor
-final class AlbumArt: ObservableObject {
+@Observable
+final class AlbumArt {
     static let shared = AlbumArt()
 
     /// Bumped whenever a new cover arrives so artwork views refresh.
-    @Published private(set) var version = 0
+    private(set) var version = 0
 
-    private var images: [String: NSImage] = [:]
-    private var queue: [Song] = []
-    private var queued = Set<String>()
-    private var running = false
-    private var missing: [String: Date] = [:]
+    @ObservationIgnored private var images: [String: NSImage] = [:]
+    @ObservationIgnored private var queue: [Song] = []
+    @ObservationIgnored private var queued = Set<String>()
+    @ObservationIgnored private var running = false
+    @ObservationIgnored private var missing: [String: Date] = [:]
     private let missingURL = SongMedia.artFolder.appendingPathComponent("not-found.json")
 
     private init() {
@@ -24,6 +25,7 @@ final class AlbumArt: ObservableObject {
 
     /// The cover for a song id, if one is cached (custom songs keep the art saved when they were added).
     func image(for id: String) -> NSImage? {
+        _ = version  // views that show a cover refresh when a new one arrives
         if id.hasPrefix("custom-") { return SongMedia.image(for: id) }
         if let i = images[id] { return i }
         let url = SongMedia.artURL(id)

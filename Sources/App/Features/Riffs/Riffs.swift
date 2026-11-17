@@ -257,10 +257,11 @@ enum RiffLibrary {
 
 /// Plays a riff note by note on the synth, with techniques, swing and an optional loop.
 @MainActor
-final class RiffPlayer: ObservableObject {
-    @Published private(set) var playing = false
-    @Published private(set) var current: Int?
-    private var task: Task<Void, Never>?
+@Observable
+final class RiffPlayer {
+    private(set) var playing = false
+    private(set) var current: Int?
+    @ObservationIgnored private var task: Task<Void, Never>?
 
     func toggle(_ riff: Riff, speed: Double, loop: Bool) { playing ? stop() : play(riff, speed: speed, loop: loop) }
 
@@ -336,8 +337,8 @@ final class RiffPlayer: ObservableObject {
 // MARK: - Library page
 
 struct RiffLibraryView: View {
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var app: AppState
+    @Environment(ProgressStore.self) var progress
+    @Environment(AppState.self) var app
     @State private var kind: Riff.Kind? = nil
     @State private var level: Int? = nil
     @State private var open: Riff?
@@ -455,10 +456,10 @@ struct MiniTab: View {
 // MARK: - Riff page
 
 struct RiffDetailView: View {
-    @EnvironmentObject var app: AppState
+    @Environment(AppState.self) var app
     var riff: Riff
     var onBack: () -> Void
-    @StateObject private var player = RiffPlayer()
+    @State private var player = RiffPlayer()
     @State private var tone: GuitarSynth.Tone = .acoustic
     @State private var speed = 0.75
     @State private var loop = true

@@ -386,7 +386,7 @@ struct ArtworkView: View {
     var genre: String
     var size: CGFloat
     var radius: CGFloat? = nil
-    @ObservedObject private var art = AlbumArt.shared
+    private var art: AlbumArt { .shared }
 
     var body: some View {
         let h = abs(seed.stableHash)

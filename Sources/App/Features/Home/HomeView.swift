@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct HomeView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
 
     private var greeting: String {
         let h = Calendar.current.component(.hour, from: Date())

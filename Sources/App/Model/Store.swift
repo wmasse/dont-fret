@@ -299,15 +299,16 @@ struct DailyChallenge {
     var icon: String
 }
 
-final class ProgressStore: ObservableObject {
-    @Published var data: ProgressData {
+@Observable
+final class ProgressStore {
+    var data: ProgressData {
         didSet {
             applyEnvironment()
             scheduleSave()
         }
     }
-    @Published var toasts: [Toast] = []
-    private var saveWork: DispatchWorkItem?
+    var toasts: [Toast] = []
+    @ObservationIgnored private var saveWork: DispatchWorkItem?
 
     static var folder: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DontFret", isDirectory: true)

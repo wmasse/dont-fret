@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct ChordLibraryView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
     @State private var query = ""
     @State private var category: ChordCategory? = nil
     @State private var level: Int? = nil
@@ -49,8 +49,8 @@ struct ChordLibraryView: View {
         }
         .sheet(item: $selected) { s in
             ChordDetailSheet(shape: s)
-                .environmentObject(app)
-                .environmentObject(progress)
+                .environment(app)
+                .environment(progress)
         }
     }
 }
@@ -89,8 +89,8 @@ struct ChordCard: View {
 }
 
 struct ChordDetailSheet: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
     @Environment(\.dismiss) var dismiss
     var shape: ChordShape
 

@@ -7,7 +7,7 @@ private let recordRed = Color(hex: 0xFF4D5E)
 
 /// Recording studio: record audio or video takes, then trim, mix, polish and export them.
 struct StudioView: View {
-    @ObservedObject private var store = StudioStore.shared
+    private var store: StudioStore { .shared }
     @State private var open: String?
 
     var body: some View {
@@ -23,10 +23,11 @@ struct StudioView: View {
 // MARK: - Record + takes
 
 /// A steady click to play along with while recording.
-final class StudioClick: ObservableObject {
-    @Published var on = false
-    @Published var bpm = 90
-    private var task: Task<Void, Never>?
+@Observable
+final class StudioClick {
+    var on = false
+    var bpm = 90
+    @ObservationIgnored private var task: Task<Void, Never>?
 
     func start() {
         stop()
@@ -48,12 +49,12 @@ final class StudioClick: ObservableObject {
 }
 
 struct StudioHome: View {
-    @EnvironmentObject var progress: ProgressStore
-    @ObservedObject var store: StudioStore
+    @Environment(ProgressStore.self) var progress
+    var store: StudioStore
     var onOpen: (String) -> Void
-    @StateObject private var recorder = StudioRecorder()
-    @StateObject private var click = StudioClick()
-    @StateObject private var backing = ProgressionPlayer()
+    @StateModel private var recorder = StudioRecorder()
+    @State private var click = StudioClick()
+    @State private var backing = ProgressionPlayer()
     @State private var mode: StudioRecorder.Mode = .audio
     @State private var backingID = ""
     @State private var saving = false
@@ -236,7 +237,7 @@ struct LevelBars: View {
 
 struct TakeCard: View {
     var take: Take
-    @ObservedObject var store: StudioStore
+    var store: StudioStore
     @State private var thumb: NSImage?
     @State private var peaks: [Float] = []
 
@@ -326,10 +327,10 @@ struct VideoSurface: NSViewRepresentable {
 
 struct TakeEditorView: View {
     let takeID: String
-    @ObservedObject var store: StudioStore
+    var store: StudioStore
     var onBack: () -> Void
-    @StateObject private var playback = StudioPlayback()
-    @StateObject private var dubber = StudioRecorder()
+    @StateModel private var playback = StudioPlayback()
+    @StateModel private var dubber = StudioRecorder()
     @State private var name = ""
     @State private var layerStart: Double?
     @State private var armed = false
@@ -773,8 +774,8 @@ private let layerColors: [Color] = [Color(hex: 0xB78CFF), Color(hex: 0x3DD68C), 
 /// The main track and its layers on one shared time ruler: select, cut, trim, move and mix.
 struct TimelineLanes: View {
     var take: Take
-    @ObservedObject var store: StudioStore
-    @ObservedObject var playback: StudioPlayback
+    var store: StudioStore
+    var playback: StudioPlayback
     @Binding var selection: ClosedRange<Double>?
     @Binding var selectedLayer: String?
     var zoom: Double

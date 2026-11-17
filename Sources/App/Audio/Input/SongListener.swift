@@ -164,17 +164,18 @@ final class SystemAudioTap {
 
 /// Drives a whole-song listen: start, show progress, stop, analyse.
 @MainActor
-final class WholeSongListener: ObservableObject {
+@Observable
+final class WholeSongListener {
     enum Stage: Equatable { case idle, listening, analysing, done, failed(String) }
-    @Published private(set) var stage: Stage = .idle
-    @Published private(set) var seconds: Double = 0
-    @Published private(set) var level: Float = 0
+    private(set) var stage: Stage = .idle
+    private(set) var seconds: Double = 0
+    private(set) var level: Float = 0
     /// Seconds the song has been audibly playing (for the "nothing heard yet" hint).
-    @Published private(set) var heardSeconds: Double = 0
-    private var tap: AnyObject?
-    private var timer: Timer?
-    private var target: Double = 0
-    private var onResult: ((Transcription) -> Void)?
+    private(set) var heardSeconds: Double = 0
+    @ObservationIgnored private var tap: AnyObject?
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var target: Double = 0
+    @ObservationIgnored private var onResult: ((Transcription) -> Void)?
 
     static var isSupported: Bool {
         if #available(macOS 14.2, *) { return true }

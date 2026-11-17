@@ -50,7 +50,7 @@ struct KaraokeLines: View {
 
 /// Karaoke lines that follow a `ProgressionPlayer` (Hear the Chords).
 struct PlayerKaraoke: View {
-    @ObservedObject var player: ProgressionPlayer
+    var player: ProgressionPlayer
     var lines: [LyricLine]
     var size: CGFloat = 22
     var alignment: HorizontalAlignment = .center
@@ -64,7 +64,7 @@ struct PlayerKaraoke: View {
 
 /// Karaoke lines that follow the Play Along clock.
 struct GameKaraoke: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var lines: [LyricLine]
     var size: CGFloat = 24
     var body: some View {
@@ -75,7 +75,7 @@ struct GameKaraoke: View {
 /// A bar along the bottom of the song page while the song plays, so the words are on screen
 /// whichever Hear button started it.
 struct KaraokeBar: View {
-    @ObservedObject var player: ProgressionPlayer
+    var player: ProgressionPlayer
     var lines: [LyricLine]
     var body: some View {
         if player.playing {
@@ -93,7 +93,7 @@ struct KaraokeBar: View {
 
 /// The whole lyrics on the song page, the line being sung highlighted as the song plays.
 struct LyricsCard: View {
-    @ObservedObject var player: ProgressionPlayer
+    var player: ProgressionPlayer
     var song: Song
     var tempo: Double = 1
 

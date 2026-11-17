@@ -178,9 +178,10 @@ func formatTime(_ s: Double, tenths: Bool = false) -> String {
 
 // MARK: - Store
 
-final class StudioStore: ObservableObject {
+@Observable
+final class StudioStore {
     static let shared = StudioStore()
-    @Published private(set) var takes: [Take] = []
+    private(set) var takes: [Take] = []
 
     static var defaultFolder: URL { ProgressStore.folder.appendingPathComponent("Studio", isDirectory: true) }
     /// Where recordings and takes.json live.
@@ -234,29 +235,30 @@ final class StudioStore: ObservableObject {
 // MARK: - Recording
 
 /// Records audio (to .m4a) or video with sound (to .mov) from the Mac's camera and microphone.
-final class StudioRecorder: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+@Observable
+final class StudioRecorder: NSObject, AVCaptureFileOutputRecordingDelegate {
     enum Mode: String, CaseIterable, Identifiable { case audio = "Audio Only", video = "Video + Audio"; var id: String { rawValue } }
 
-    @Published private(set) var mode: Mode = .audio
-    @Published private(set) var recording = false
-    @Published private(set) var elapsed: Double = 0
-    @Published private(set) var level: Float = 0
-    @Published private(set) var running = false
-    @Published var error: String?
-    @Published private(set) var mics: [AVCaptureDevice] = []
-    @Published private(set) var cameras: [AVCaptureDevice] = []
-    @Published var micID: String?
-    @Published var cameraID: String?
+    private(set) var mode: Mode = .audio
+    private(set) var recording = false
+    private(set) var elapsed: Double = 0
+    private(set) var level: Float = 0
+    private(set) var running = false
+    var error: String?
+    private(set) var mics: [AVCaptureDevice] = []
+    private(set) var cameras: [AVCaptureDevice] = []
+    var micID: String?
+    var cameraID: String?
 
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "studio.capture")
     private let movieOut = AVCaptureMovieFileOutput()
     private let audioOut = AVCaptureAudioFileOutput()
-    private var meter: Timer?
-    private var startedAt: Date?
+    @ObservationIgnored private var meter: Timer?
+    @ObservationIgnored private var startedAt: Date?
     /// Called on the main thread when recording really begins (for lining up layers) and when the file is finished.
-    var onStart: ((Date) -> Void)?
-    var onFinish: ((URL, Double) -> Void)?
+    @ObservationIgnored var onStart: ((Date) -> Void)?
+    @ObservationIgnored var onFinish: ((URL, Double) -> Void)?
 
     override init() {
         super.init()
@@ -646,25 +648,26 @@ func fadeGain(_ t: Double, length: Double, edit e: TakeEdit) -> Float {
 // MARK: - Live playback
 
 /// Plays a take with all its edits, live — move a slider and hear it change. Keeps a video in sync.
-final class StudioPlayback: ObservableObject {
-    @Published private(set) var playing = false
+@Observable
+final class StudioPlayback {
+    private(set) var playing = false
     /// Where we are, in seconds of the original recording.
-    @Published private(set) var position: Double = 0
-    @Published var error: String?
+    private(set) var position: Double = 0
+    var error: String?
     /// Tracks being soloed ("main" or a layer id). Empty = everything plays.
-    @Published var solo: Set<String> = [] { didSet { if let t = take { graph?.apply(t.edit, layers: t.layers, solo: solo) } } }
+    var solo: Set<String> = [] { didSet { if let t = take { graph?.apply(t.edit, layers: t.layers, solo: solo) } } }
     /// Play this part over and over (seconds of the original recording).
-    @Published var loop: ClosedRange<Double>?
+    var loop: ClosedRange<Double>?
     let video = AVPlayer()
-    private var engine: AVAudioEngine?
-    private var graph: StudioGraph?
-    private var timer: Timer?
-    private var startOut = 0.0
-    private var raw = false
-    private var rawFrom = 0.0
-    private var take: Take?
-    private weak var store: StudioStore?
-    private var videoKey = ""
+    @ObservationIgnored private var engine: AVAudioEngine?
+    @ObservationIgnored private var graph: StudioGraph?
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var startOut = 0.0
+    @ObservationIgnored private var raw = false
+    @ObservationIgnored private var rawFrom = 0.0
+    @ObservationIgnored private var take: Take?
+    @ObservationIgnored private weak var store: StudioStore?
+    @ObservationIgnored private var videoKey = ""
 
     init() {
         video.isMuted = true

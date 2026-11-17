@@ -20,52 +20,54 @@ struct Feedback: Equatable {
 }
 
 /// The fast-changing playhead lives in its own object so only the views that move redraw every frame.
-final class PlayClock: ObservableObject {
-    @Published var beat: Double
+@Observable
+final class PlayClock {
+    var beat: Double
     init(_ b: Double) { beat = b }
 }
 
-final class PlayEngine: ObservableObject {
+@Observable
+final class PlayEngine {
     let song: Song
     let events: [ChordEvent]
     let mode: PlayMode
     let input: InputMode
     let countIn: Double
     let clock: PlayClock
-    var strictness: Strictness = .normal
-    var maxTempo: Double = 1.25
-    @Published var tempo: Double
-    @Published var metronome: Bool
+    @ObservationIgnored var strictness: Strictness = .normal
+    @ObservationIgnored var maxTempo: Double = 1.25
+    var tempo: Double
+    var metronome: Bool
 
-    @Published private(set) var countingIn = true
-    @Published private(set) var index = 0
-    @Published private(set) var results: [HitResult?]
-    @Published private(set) var score = 0
-    @Published private(set) var streak = 0
-    @Published private(set) var maxStreak = 0
-    @Published var paused = false
-    @Published private(set) var finished = false
-    @Published private(set) var feedback: Feedback?
-    @Published private(set) var holdProgress: Double = 0
-    @Published private(set) var waiting = false
-    @Published private(set) var hint: String?
-    @Published var autoScroll = true
+    private(set) var countingIn = true
+    private(set) var index = 0
+    private(set) var results: [HitResult?]
+    private(set) var score = 0
+    private(set) var streak = 0
+    private(set) var maxStreak = 0
+    var paused = false
+    private(set) var finished = false
+    private(set) var feedback: Feedback?
+    private(set) var holdProgress: Double = 0
+    private(set) var waiting = false
+    private(set) var hint: String?
+    var autoScroll = true
     // section looping
-    @Published private(set) var loop: ClosedRange<Int>?
-    @Published var autoRamp = true
-    @Published private(set) var loopPasses = 0
-    @Published private(set) var loopCleanPasses = 0
-    var onSpeedUp: (() -> Void)?
+    private(set) var loop: ClosedRange<Int>?
+    var autoRamp = true
+    private(set) var loopPasses = 0
+    private(set) var loopCleanPasses = 0
+    @ObservationIgnored var onSpeedUp: (() -> Void)?
 
-    private(set) var activeSeconds: Double = 0
-    private var timer: Timer?
-    private var lastTick: CFTimeInterval = 0
-    private var lastClickBeat = Int.min
-    private var holdFrames = 0
-    private var failFrames = 0
-    private var lastOnsetBeat = -Double.infinity
-    private var waitStart: CFTimeInterval?
-    private var bag = Set<AnyCancellable>()
+    @ObservationIgnored private(set) var activeSeconds: Double = 0
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var lastTick: CFTimeInterval = 0
+    @ObservationIgnored private var lastClickBeat = Int.min
+    @ObservationIgnored private var holdFrames = 0
+    @ObservationIgnored private var failFrames = 0
+    @ObservationIgnored private var lastOnsetBeat = -Double.infinity
+    @ObservationIgnored private var waitStart: CFTimeInterval?
+    @ObservationIgnored private var bag = Set<AnyCancellable>()
 
     init(config: GameConfig) {
         song = config.song
@@ -321,11 +323,11 @@ final class PlayEngine: ObservableObject {
 // MARK: - Container
 
 struct GameContainer: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
+    @Environment(AudioEngine.self) var audio
     let config: GameConfig
-    @StateObject private var engine: PlayEngine
+    @State private var engine: PlayEngine
     @State private var keys = KeyMonitor()
     @State private var saved = false
     @State private var xpEarned = 0
@@ -333,7 +335,7 @@ struct GameContainer: View {
 
     init(config: GameConfig) {
         self.config = config
-        _engine = StateObject(wrappedValue: PlayEngine(config: config))
+        _engine = State(initialValue: PlayEngine(config: config))
     }
 
     var body: some View {
@@ -428,7 +430,7 @@ struct GameContainer: View {
 }
 
 struct SongProgressBar: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var total: Double
     var body: some View {
         GeometryReader { g in
@@ -445,8 +447,8 @@ struct SongProgressBar: View {
 }
 
 struct GameTopBar: View {
-    @EnvironmentObject var audio: AudioEngine
-    @ObservedObject var engine: PlayEngine
+    @Environment(AudioEngine.self) var audio
+    @Bindable var engine: PlayEngine
     let clock: PlayClock
     var onClose: () -> Void
 
@@ -527,7 +529,7 @@ struct AnyButtonStyle: ButtonStyle {
 // MARK: - Small clock-driven pieces
 
 struct StrumStrip: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var pattern: StrumPattern
     var beatsPerBar: Int
     var waiting: Bool
@@ -543,7 +545,7 @@ struct StrumStrip: View {
 }
 
 struct BeatDots: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var beatsPerBar: Int
     var waiting: Bool
     var body: some View {
@@ -562,7 +564,7 @@ struct BeatDots: View {
 }
 
 struct BeatsAway: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var start: Double
     var body: some View {
         Text("in \(Int(max(0, start - clock.beat).rounded(.up))) beats")
@@ -602,9 +604,9 @@ struct NoteTabView: View {
 // MARK: - Highway (Play Along & Wait Mode)
 
 struct HighwayModeView: View {
-    @EnvironmentObject var audio: AudioEngine
+    @Environment(AudioEngine.self) var audio
     @Environment(\.accessibilityReduceMotion) var reduceMotion
-    @ObservedObject var engine: PlayEngine
+    @Bindable var engine: PlayEngine
 
     var body: some View {
         VStack(spacing: 20) {
@@ -801,8 +803,8 @@ struct ChordChipLarge: View {
 }
 
 struct ChordHighway: View {
-    @ObservedObject var engine: PlayEngine
-    @ObservedObject var clock: PlayClock
+    @Bindable var engine: PlayEngine
+    var clock: PlayClock
     var body: some View {
         GeometryReader { g in
             let w = g.size.width, h = g.size.height
@@ -879,7 +881,7 @@ struct ChordHighway: View {
 // MARK: - Auto-scroll chord sheet
 
 struct BarProgress: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     var event: ChordEvent
     var isCurrent: Bool
     var past: Bool
@@ -897,7 +899,7 @@ struct BarProgress: View {
 }
 
 struct SheetModeView: View {
-    @ObservedObject var engine: PlayEngine
+    @Bindable var engine: PlayEngine
 
     private struct Block: Identifiable { let id: Int; let title: String; let events: [ChordEvent] }
 
@@ -1061,7 +1063,7 @@ struct SheetModeView: View {
 // MARK: - Overlays
 
 struct CountInOverlay: View {
-    @ObservedObject var clock: PlayClock
+    var clock: PlayClock
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     var startBeat: Double
     var body: some View {
@@ -1085,7 +1087,7 @@ struct CountInOverlay: View {
 }
 
 struct PauseOverlay: View {
-    @ObservedObject var engine: PlayEngine
+    @Bindable var engine: PlayEngine
     var onQuit: () -> Void
     var body: some View {
         ZStack {
@@ -1117,7 +1119,7 @@ struct PauseOverlay: View {
 }
 
 struct ResultsOverlay: View {
-    @ObservedObject var engine: PlayEngine
+    @Bindable var engine: PlayEngine
     var xp: Int
     var newBest: Bool
     var onAgain: () -> Void

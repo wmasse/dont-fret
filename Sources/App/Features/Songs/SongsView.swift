@@ -29,8 +29,8 @@ struct SearchField: View {
 struct AddRequest: Identifiable { var id = UUID(); var query: String }
 
 struct SongLibraryView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
     @State private var query = ""
     @State private var difficulty: Int? = nil
     @State private var genre: String? = nil
@@ -156,8 +156,8 @@ struct SongLibraryView: View {
         }
         .sheet(item: $addRequest) { r in
             AddSongView(initialQuery: r.query)
-                .environmentObject(app)
-                .environmentObject(progress)
+                .environment(app)
+                .environment(progress)
         }
         .alert(importMessage ?? "", isPresented: Binding(get: { importMessage != nil }, set: { if !$0 { importMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -174,8 +174,8 @@ struct SongLibraryView: View {
 }
 
 struct SongDetailView: View {
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(AppState.self) var app
+    @Environment(ProgressStore.self) var progress
     var song: Song
     @State private var mode: PlayMode = .perform
     @State private var tempo: Double = 1
@@ -185,8 +185,8 @@ struct SongDetailView: View {
     @State private var didInit = false
     @State private var transpose = 0
     @State private var capo = 0
-    @StateObject private var hear = ProgressionPlayer()
-    @StateObject private var original = PreviewPlayer()
+    @State private var hear = ProgressionPlayer()
+    @State private var original = PreviewPlayer()
 
     private var tempos: [Double] {
         var t: [Double] = [0.5, 0.7, 0.85, 1.0]
@@ -231,7 +231,7 @@ struct SongDetailView: View {
             tempo = progress.skill.defaultTempo
             capo = base.capo
         }
-        .sheet(item: $editing) { e in SongEditorView(existing: e).environmentObject(progress) }
+        .sheet(item: $editing) { e in SongEditorView(existing: e).environment(progress) }
         .onDisappear { hear.stop(); original.stop() }
         .onChange(of: app.activeGame?.id) { _, _ in hear.stop(); original.stop() }
         .alert("Delete \"\(base.title)\"?", isPresented: $confirmDelete) {
@@ -330,7 +330,7 @@ struct SongDetailView: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("INPUT").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
-                InputModePicker(mode: $app.inputMode)
+                InputModePicker(mode: Bindable(app).inputMode)
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("METRONOME").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
@@ -677,7 +677,7 @@ struct EditSection: Identifiable, Equatable {
 }
 
 struct SongEditorView: View {
-    @EnvironmentObject var progress: ProgressStore
+    @Environment(ProgressStore.self) var progress
     @Environment(\.dismiss) var dismiss
     var existing: Song?
     /// Inside another sheet: report back instead of saving and dismissing.
@@ -696,7 +696,7 @@ struct SongEditorView: View {
     @State private var textMode = false
     @State private var text = ""
     @State private var taps: [Date] = []
-    @StateObject private var player = ProgressionPlayer()
+    @State private var player = ProgressionPlayer()
     @State private var loaded = false
 
     /// One section per line: `Name xN [STRUM]: chords…` (used by "Type it instead").
