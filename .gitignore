@@ -10,3 +10,6 @@ release/
 .build/
 .swiftpm/
 xcuserdata/
+
+# python
+__pycache__/
