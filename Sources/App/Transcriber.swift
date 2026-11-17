@@ -258,7 +258,7 @@ enum Transcriber {
         t.barPhase = phase
         t.songZeroBeat = Double(firstBarBeat + startBar * meter)
         // 10. the melody
-        t.heardMelody = MelodyExtractor.extract(mono: samples, side: side, sampleRate: sr, tuning: tuning)
+        t.heardMelody = MelodyExtractor.extract(mono: samples, side: side, sampleRate: sr, tuning: tuning, keyRoot: keyRoot, minorKey: minorKey)
         return t
     }
 

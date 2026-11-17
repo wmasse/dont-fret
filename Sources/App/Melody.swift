@@ -41,17 +41,29 @@ enum MelodyExtractor {
     static let steadyCutoff: Float = 0.7
     /// Move a note down an octave when the octave below scores at least this share of it.
     static let octaveCutoff: Float = 0.8
+    /// Note tracking: how far (semitones) a frame can sit from its note before it costs much, the cost
+    /// of changing note, the per-frame cost of a note outside the key, and the longest glide (frames).
+    /// Below `lowFullWeight` (MIDI) pitches count less, down to `lowFloor` at G2: the bass lives down
+    /// there, but so do the lowest notes of baritones.
+    static let lowFloor: Float = 0.15
+    static let lowFullWeight: Float = 52
+    static let noteSpread: Float = 0.5
+    static let noteChange: Float = 10
+    static let outOfKey: Float = 0.5
+    static let glideFrames = 12
 
     // MARK: extraction
 
     /// - Parameters:
     ///   - mono: (L + R) / 2.  - side: (L − R) / 2, if the recording is stereo; lets the centre stand out.
     ///   - tuning: the recording's offset from A440 in semitones (see `Transcriber.estimateTuning`).
-    static func extract(mono: [Float], side: [Float]? = nil, sampleRate sr: Double, tuning: Float = 0) -> [HeardNote] {
+    ///   - keyRoot, minorKey: the song's key, when known; a pitch right between two notes leans to the one in the key.
+    static func extract(mono: [Float], side: [Float]? = nil, sampleRate sr: Double, tuning: Float = 0,
+                        keyRoot: Int? = nil, minorKey: Bool = false) -> [HeardNote] {
         let sal = salience(mono: mono, side: side, sampleRate: sr)
         guard !sal.frames.isEmpty else { return [] }
         let path = track(sal.frames, reference: sal.reference)
-        return notes(path: path, frames: sal.frames, reference: sal.reference, tuning: tuning)
+        return notes(path: path, frames: sal.frames, reference: sal.reference, tuning: tuning, keyRoot: keyRoot, minorKey: minorKey)
     }
 
     struct Salience {
@@ -87,7 +99,7 @@ enum MelodyExtractor {
         // a singer's range gets full weight; very low pitches (bass, guitar roots) much less
         let prior: [Float] = (0..<bins).map { b in
             let m = lowMidi + Float(b) / bps
-            if m < 52 { return 0.15 + 0.85 * max(0, (m - 43) / 9) }
+            if m < lowFullWeight { return lowFloor + (1 - lowFloor) * max(0, (m - 43) / (lowFullWeight - 43)) }
             if m > 81 { return max(0.4, 1 - (m - 81) / 10) }
             return 1
         }
@@ -236,8 +248,12 @@ enum MelodyExtractor {
         return path
     }
 
-    /// Turns a pitch path into notes: steady pitches become notes, dips in strength split repeated notes.
-    static func notes(path: [Int], frames: [[Float]], reference: Float, tuning: Float) -> [HeardNote] {
+    /// Turns a pitch path into notes. A note-level Viterbi decides which semitone each stretch of
+    /// singing is (vibrato, scoops and a singer sitting between two pitches don't flip it back and
+    /// forth), then short glides are folded into the note they slide to, dips in strength split
+    /// repeated notes, and weak, dead-steady notes (the band) are dropped.
+    static func notes(path: [Int], frames: [[Float]], reference: Float, tuning: Float,
+                      keyRoot: Int? = nil, minorKey: Bool = false) -> [HeardNote] {
         let bins = binCount
         let bps = Float(binsPerSemitone)
         let T = path.count
@@ -262,45 +278,112 @@ enum MelodyExtractor {
                 lower[t] = near > 0 ? below / near : 0
             }
         }
-        // voiced runs; weak runs are accompaniment the tracker wandered into
+        // the singer's own tuning: singers (and older recordings) often sit a little off the band's
+        // A440 grid, which would put held notes right between two semitones
+        var sx: Float = 0, sy: Float = 0, sw: Float = 0
+        for t in 0..<T where !pitch[t].isNaN && strength[t] > 0.4 {
+            let ang = 2 * Float.pi * (pitch[t] - pitch[t].rounded())
+            sx += strength[t] * cos(ang); sy += strength[t] * sin(ang); sw += strength[t]
+        }
+        if sw > 0, (sx * sx + sy * sy).squareRoot() / sw > 0.2 {
+            let offset = atan2(sy, sx) / (2 * .pi)
+            for t in 0..<T where !pitch[t].isNaN { pitch[t] -= offset }
+        }
+        let scale: Set<Int>? = keyRoot.map { r in Set((minorKey ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11]).map { (r + $0) % 12 }) }
+        // voiced runs → notes
         var out: [HeardNote] = []
         var t = 0
         while t < T {
             guard !pitch[t].isNaN else { t += 1; continue }
             var e = t
             while e < T && !pitch[e].isNaN { e += 1 }
-            out += segment(Array(pitch[t..<e]), Array(strength[t..<e]), Array(lower[t..<e]), offset: t)
+            out += segment(Array(pitch[t..<e]), Array(strength[t..<e]), Array(lower[t..<e]), offset: t, scale: scale)
             t = e
+        }
+        // a note that drops out for a moment and comes back on the same pitch is one note
+        var merged: [HeardNote] = []
+        for n in out {
+            if var last = merged.last, last.midi == n.midi, n.start - last.end <= 0.05, n.strength <= last.strength * 1.3 {
+                last.strength = (last.strength * Float(last.end - last.start) + n.strength * Float(n.end - n.start)) / Float(n.end - last.start)
+                last.end = n.end
+                merged[merged.count - 1] = last
+            } else { merged.append(n) }
+        }
+        return fixOctaveSlips(merged)
+    }
+
+    /// A note an octave (or two) away from both neighbours, which agree with each other, is an
+    /// octave slip of the pitch tracker: bring it back next to them.
+    static func fixOctaveSlips(_ notes: [HeardNote]) -> [HeardNote] {
+        guard notes.count >= 3 else { return notes }
+        var out = notes
+        for i in 1..<(out.count - 1) {
+            let p = out[i - 1], q = out[i + 1], m = out[i].midi
+            // only within a phrase
+            guard out[i].start - p.end < 1.5, q.start - out[i].end < 1.5, abs(p.midi - q.midi) <= 7 else { continue }
+            let mid = Double(p.midi + q.midi) / 2
+            var best = m
+            for k in [-24, -12, 12, 24] where abs(Double(m + k) - mid) < abs(Double(best) - mid) { best = m + k }
+            if abs(Double(m) - mid) >= 9, abs(Double(best) - mid) <= 6 { out[i].midi = best }
         }
         return out
     }
 
-    private static func segment(_ p: [Float], _ s: [Float], _ lower: [Float], offset: Int) -> [HeardNote] {
+    /// Which semitone each frame of one voiced run belongs to: staying on a note is free, changing
+    /// costs `noteChange`; a frame costs its squared distance from the note (in `noteSpread`s, capped
+    /// so a stray frame can't drag a whole note), plus a little for notes outside the key.
+    static func noteStates(_ p: [Float], scale: Set<Int>?) -> [Int] {
+        let n = p.count
+        let lo = Int((p.min() ?? 60).rounded(.down)) - 1, hi = Int((p.max() ?? 60).rounded(.up)) + 1
+        let notes = Array(lo...hi)
+        let k = notes.count
+        let spread: Float = noteSpread, change: Float = noteChange
+        func emit(_ i: Int, _ j: Int) -> Float {
+            let d = (p[i] - Float(notes[j])) / spread
+            var c = min(9, d * d)
+            if let scale, !scale.contains(((notes[j] % 12) + 12) % 12) { c += outOfKey }
+            return c
+        }
+        var cost = (0..<k).map { emit(0, $0) }
+        var back = [[Int]](repeating: [Int](repeating: 0, count: k), count: n)
+        for i in 1..<max(1, n) {
+            let best = cost.indices.min { cost[$0] < cost[$1] }!
+            var next = [Float](repeating: 0, count: k)
+            for j in 0..<k {
+                let stay = cost[j], move = cost[best] + change
+                if stay <= move { next[j] = stay; back[i][j] = j } else { next[j] = move; back[i][j] = best }
+                next[j] += emit(i, j)
+            }
+            cost = next
+        }
+        var j = cost.indices.min { cost[$0] < cost[$1] }!
+        var out = [Int](repeating: 0, count: n)
+        for i in stride(from: n - 1, through: 0, by: -1) { out[i] = notes[j]; j = back[i][j] }
+        return out
+    }
+
+    private static func segment(_ p: [Float], _ s: [Float], _ lower: [Float], offset: Int, scale: Set<Int>?) -> [HeardNote] {
         let n = p.count
         guard n >= 6 else { return [] }
-        // median-smooth the pitch over 70 ms so vibrato and scoops don't break notes up
-        let smooth: [Float] = (0..<n).map { i in
-            let w = p[max(0, i - 3)...min(n - 1, i + 3)].sorted()
-            return w[w.count / 2]
-        }
-        var rounded = smooth.map { Int($0.rounded()) }
-        // a pitch has to hold for 40 ms to count as a new note
-        var i = 0
-        var cur = rounded[0]
-        while i < n {
-            if rounded[i] != cur {
-                var j = i
-                while j < n && rounded[j] == rounded[i] { j += 1 }
-                if j - i < 4 && abs(smooth[i] - Float(cur)) < 1.2 {
-                    for k in i..<j { rounded[k] = cur }
-                } else { cur = rounded[i] }
-                i = j
-            } else { i += 1 }
-        }
-        // pieces of steady pitch
+        let states = noteStates(p, scale: scale)
+        // pieces of one note
         var pieces: [(a: Int, b: Int, m: Int)] = []
         var a = 0
-        for k in 1...n where k == n || rounded[k] != rounded[a] { pieces.append((a, k, rounded[a])); a = k }
+        for k in 1...n where k == n || states[k] != states[a] { pieces.append((a, k, states[a])); a = k }
+        // glides: a short piece sliding into (or out of) a neighbour within two semitones belongs to it
+        var changed = true
+        while changed && pieces.count > 1 {
+            changed = false
+            for i in pieces.indices where pieces[i].b - pieces[i].a < glideFrames {
+                let next = i + 1 < pieces.count ? pieces[i + 1] : nil, prev = i > 0 ? pieces[i - 1] : nil
+                if let nx = next, abs(nx.m - pieces[i].m) <= 2, nx.b - nx.a >= pieces[i].b - pieces[i].a {
+                    pieces[i + 1].a = pieces[i].a; pieces.remove(at: i); changed = true; break
+                }
+                if let pv = prev, abs(pv.m - pieces[i].m) <= 2, pv.b - pv.a >= pieces[i].b - pieces[i].a {
+                    pieces[i - 1].b = pieces[i].b; pieces.remove(at: i); changed = true; break
+                }
+            }
+        }
         // split repeated notes where the voice dips (a new syllable)
         var split: [(a: Int, b: Int, m: Int)] = []
         for pc in pieces {
