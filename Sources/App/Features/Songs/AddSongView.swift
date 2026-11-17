@@ -345,10 +345,11 @@ struct AddSongView: View {
                 let chart = await ChordCharts.find(title: t.trackName, artist: t.artistName)
                 let match = chart.flatMap { ChordCharts.match($0, to: result, trackSeconds: seconds) }
                 let found = await lyrics
-                // the sung words, to line the lyrics up by what's sung
-                if case .synced(let lines) = found {
-                    result.heardWords = await WordListener.words(url: audio, language: WordListener.language(of: lines))
-                }
+                // the sung words: to line the lyrics up by what's sung, or to write them down when
+                // there are no lyrics to line up
+                var language: String?
+                if case .synced(let lines) = found { language = WordListener.language(of: lines) }
+                result.heardWords = await WordListener.words(url: audio, language: language, hints: [t.trackName, t.artistName])
                 await MainActor.run {
                     transcription = result
                     chartMatch = match
@@ -623,9 +624,14 @@ struct AddSongView: View {
 
     private func builtSong(_ t: CatalogTrack, _ raw: Transcription) -> Song {
         var s = songWithoutLyrics(t, raw)
+        let extended = wholeAudio == nil && usableChart == nil
         if case .synced(let lines)? = lyricsFound, let offset = lyricsOffset {
-            s.lyrics = Lyrics.place(lines, offset: offset, transcription: effective(raw), song: s,
-                                    extended: wholeAudio == nil && usableChart == nil)
+            s.lyrics = Lyrics.place(lines, offset: offset, transcription: effective(raw), song: s, extended: extended)
+        }
+        // no lyrics that line up: write down what's sung in the recording instead
+        if s.lyrics == nil, let heard = Lyrics.heardLines(raw.heardWords) {
+            s.lyrics = Lyrics.place(heard, offset: 0, transcription: effective(raw), song: s, extended: extended)
+            if s.lyrics != nil { s.lyricsSource = "heard" }
         }
         return s
     }
@@ -688,7 +694,11 @@ struct AddSongView: View {
                          + (wholeAudio == nil && usableChart == nil ? " · repeat with the preview's chords" : ""))
                         .font(Theme.font(11)).foregroundStyle(Theme.textDim)
                     Spacer()
-                    Text("from LRCLIB").font(Theme.font(10)).foregroundStyle(Theme.textFaint)
+                    Text(song.lyricsHeard ? "heard in the recording" : "from LRCLIB").font(Theme.font(10)).foregroundStyle(Theme.textFaint)
+                }
+                if song.lyricsHeard {
+                    Label("No lyrics to line up for this song, so these are the words Don't Fret heard sung. Some may be misheard: you can fix them on the song page after adding it.",
+                          systemImage: "ear").font(Theme.font(11)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
                 }
                 PlayerKaraoke(player: chordPlayer, lines: lines, size: 20)
                     .padding(.vertical, 10)
@@ -847,7 +857,7 @@ struct AddSongView: View {
     private func startListening(_ t: CatalogTrack) {
         player.stop(); chordPlayer.stop()
         wholeError = nil
-        listener.start(songSeconds: t.trackTimeMillis.map { Double($0) / 1000 }, language: lyricsLanguage) { result in useWhole(result, fromFile: false, file: nil, t) }
+        listener.start(songSeconds: t.trackTimeMillis.map { Double($0) / 1000 }, language: lyricsLanguage, hints: [t.trackName, t.artistName]) { result in useWhole(result, fromFile: false, file: nil, t) }
     }
 
     private func chooseAudioFile(_ t: CatalogTrack) {
@@ -862,7 +872,7 @@ struct AddSongView: View {
         Task {
             do {
                 var result = try await Task.detached(priority: .userInitiated) { try Transcriber.analyze(url: url) }.value
-                result.heardWords = await WordListener.words(url: url, language: language)
+                result.heardWords = await WordListener.words(url: url, language: language, hints: [t.trackName, t.artistName])
                 await MainActor.run { useWhole(result, fromFile: true, file: url, t) }
             } catch {
                 await MainActor.run {

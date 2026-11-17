@@ -93,15 +93,24 @@ struct KaraokeBar: View {
 
 /// The whole lyrics on the song page, the line being sung highlighted as the song plays.
 struct LyricsCard: View {
+    @Environment(ProgressStore.self) var progress
     var player: ProgressionPlayer
     var song: Song
     var tempo: Double = 1
+    @State private var fixing = false
 
     var body: some View {
         let lines = song.lyrics ?? []
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Lyrics", subtitle: "Sing along — the words follow the song when you press Hear.") {
-                HearChordsButton(player: player, song: song, tempo: tempo, label: "Sing Along")
+                HStack(spacing: 8) {
+                    if song.isCustom {
+                        Button { player.stop(); fixing = true } label: { Label("Fix Words", systemImage: "pencil") }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .help("Correct any misheard or wrong words")
+                    }
+                    HearChordsButton(player: player, song: song, tempo: tempo, label: "Sing Along")
+                }
             }
             TimelineView(.animation(minimumInterval: 1.0 / 10, paused: !player.playing)) { ctx in
                 let cur = player.beat(at: ctx.date).flatMap { Lyrics.current(lines, at: $0) }
@@ -131,10 +140,84 @@ struct LyricsCard: View {
                     }
                 }
             }
-            Text("Time-synced lyrics from LRCLIB, a free community lyrics database, lined up with the recording automatically.")
-                .font(Theme.font(11)).foregroundStyle(Theme.textFaint)
+            Text(footnote).font(Theme.font(11)).foregroundStyle(song.lyricsHeard ? Theme.textDim : Theme.textFaint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .card(padding: 20, radius: 20)
+        .sheet(isPresented: $fixing) { LyricsFixSheet(songID: song.id).environment(progress) }
+    }
+
+    private var footnote: String {
+        switch song.lyricsSource {
+        case "heard": return "Written down from the words heard sung in the recording, on your Mac. Some may be misheard: tap Fix Words to correct them."
+        case "edited": return "Written down from the recording and corrected by you."
+        default: return "Time-synced lyrics from LRCLIB, a free community lyrics database, lined up with the recording automatically."
+        }
+    }
+}
+
+/// Correct a song's lyrics line by line. The timing of each line stays as it is; only the words change.
+struct LyricsFixSheet: View {
+    @Environment(ProgressStore.self) var progress
+    @Environment(\.dismiss) var dismiss
+    var songID: String
+    @State private var texts: [String] = []
+    @State private var loaded = false
+
+    private var song: Song? { progress.song(id: songID) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Fix Words").font(Theme.font(20, .bold)).foregroundStyle(Theme.text)
+            Text("Change any word that's wrong. Each line keeps its place in the song; clear a line to hide it.")
+                .font(Theme.font(12)).foregroundStyle(Theme.textDim)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(texts.indices, id: \.self) { i in
+                        HStack(spacing: 10) {
+                            Text(label(i)).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Theme.textFaint).frame(width: 34, alignment: .trailing)
+                            TextField("", text: $texts[i]).textFieldStyle(.roundedBorder).font(Theme.font(14))
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(minHeight: 260, maxHeight: 420)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(SecondaryButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Save") { save() }.buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
+        .background(Theme.bg)
+        .onAppear {
+            guard !loaded, let s = song else { return }
+            loaded = true
+            texts = (s.lyrics ?? []).map(\.text)
+        }
+    }
+
+    private func label(_ i: Int) -> String {
+        guard let s = song, let lines = s.lyrics, i < lines.count else { return "" }
+        return MelodyStrip.barLabel(lines[i].start, meter: s.beatsPerBar)
+    }
+
+    private func save() {
+        guard var s = song, var lines = s.lyrics, lines.count == texts.count else { dismiss(); return }
+        var changed = false
+        for i in lines.indices {
+            let t = texts[i].trimmingCharacters(in: .whitespaces)
+            if t != lines[i].text { lines[i].text = t; changed = true }
+        }
+        if changed {
+            s.lyrics = lines
+            if s.lyricsSource == "heard" { s.lyricsSource = "edited" }
+            progress.addCustomSong(s)
+        }
+        dismiss()
     }
 }
 

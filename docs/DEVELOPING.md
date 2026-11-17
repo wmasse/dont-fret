@@ -124,6 +124,10 @@ On the bench songs (`build/selftest --lyrics-bench`, which prints a few heard wo
 
 The lines are stored on the song (`Song.lyrics`, beats, so they follow tempo changes) and shown karaoke-style: the words fill in as the line goes by (`KaraokeLines` in `LyricsView.swift`). On the song page a bar appears at the bottom while any Hear button plays, and a Lyrics card lists every line. Play Along shows the current line above the strum, and Auto-Scroll writes each line under the chord it starts on.
 
+**Heard lyrics.** When LRCLIB has no lyrics, or none can be lined up (the 30-second-preview case above, or lyrics for another version), the words the speech recogniser heard become the lyrics instead (`Lyrics.heardLines`, macOS 26+). Only words heard with confidence 0.35 or more are kept (on the bench songs 70% of those are in the real lyrics, against 49% below that), and at least 12 real words are needed. They're split into lines at pauses over 1.1 s, sentence ends and every 9 words, and a one- or two-word scrap joins the next line (or the one before) when the gap is under 2.5 s. They're placed like any other lines and stored with `Song.lyricsSource = "heard"`, so the review screen and Lyrics card say they were heard in the recording and may have misheard words. Expect some wrong words: from listening alone the recogniser writes down about 80% of the real lyric words, and about a third of what it writes isn't in the lyrics. On the bench, heard lyrics are made for 15 of 17 previews, averaging 5.2 words a line.
+
+**Fix Words.** Songs the user added have a Fix Words button on the Lyrics card (`LyricsFixSheet` in `LyricsView.swift`) that edits each line's text in place. Line timings are kept, and an emptied line is hidden. Saving heard lyrics marks them `"edited"`, so they're no longer labelled as heard. For testing, `DONTFRET_NO_LYRICS_DB=1` makes the LRCLIB lookup return nothing, which forces the heard-lyrics path.
+
 You can also build a song chord by chord, import ChordPro `.cho` / plain-text charts, or add a line to `SongCatalog.songs` in `Songs.swift`:
 
 ```swift

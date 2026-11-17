@@ -82,6 +82,7 @@ extension SelfTest {
         var wordTrusted = 0, wordMismatch = 0, bothTrusted = 0, bothAgree = 0
         var wordOffset: [String: Double] = [:]
         var recallHave = 0, recallWant = 0, recallExtra = 0, recallHeard = 0
+        var confCount = [0, 0], confRight = [0, 0]
         var heardBySong: [(title: String, words: [HeardWord], duration: Double, seconds: Double)] = []
         var linesBySong: [[TimedLyric]] = []
         for b in benchSongs {
@@ -133,6 +134,13 @@ extension SelfTest {
                         }
                     }
                     extra = words.indices.filter { !usedWords.contains($0) && !["oh", "ooh", "yeah", "ah"].contains(Lyrics.wordKey(words[$0].text)) }.count
+                    // how right the recogniser is above and below the confidence heard lyrics need
+                    for j in words.indices {
+                        guard let c = words[j].confidence else { continue }
+                        let k = c >= Lyrics.heardConfidence ? 0 : 1
+                        confCount[k] += 1
+                        if usedWords.contains(j) { confRight[k] += 1 }
+                    }
                     if want > 0 {
                         recallHave += have; recallWant += want; recallExtra += extra; recallHeard += words.count
                         print(String(format: "   from listening alone: %d of %d lyric words written down (%.0f%%), %d heard words not in the lyrics", have, want, 100 * Double(have) / Double(want), extra))
@@ -196,6 +204,8 @@ extension SelfTest {
         }
         print("\nSynced lyrics for \(found)/\(benchSongs.count) songs; lined up confidently \(trusted)/\(found)")
         print(String(format: "Lyrics from listening alone (songs lined up): %d of %d lyric words written down (%.0f%%); %d of %d heard words weren't in the lyrics", recallHave, recallWant, 100 * Double(recallHave) / Double(max(1, recallWant)), recallExtra, recallHeard))
+        print(String(format: "   heard words at or above confidence %.2f: %d, %.0f%% in the lyrics; below: %d, %.0f%% in the lyrics", Lyrics.heardConfidence,
+                     confCount[0], 100 * Double(confRight[0]) / Double(max(1, confCount[0])), confCount[1], 100 * Double(confRight[1]) / Double(max(1, confCount[1]))))
         print("By the sung words: lined up confidently \(wordTrusted)/\(found); same place as the voice-timing match \(bothAgree)/\(bothTrusted) where both were sure")
         // another song's lyrics must never be lined up (that would show the wrong words)
         var wrongTrusted: [String] = [], wrongFlagged = 0
@@ -206,6 +216,17 @@ extension SelfTest {
             if wa.mismatch { wrongFlagged += 1 }
         }
         print("Another song's lyrics: wrongly lined up \(wrongTrusted.count)/\(heardBySong.count)\(wrongTrusted.isEmpty ? "" : " — " + wrongTrusted.joined(separator: ", ")); recognised as the wrong lyrics \(wrongFlagged)/\(heardBySong.count)")
+        // heard lyrics, the fallback when no lyrics line up: how the lines read
+        var made = 0, lineCount = 0, scraps = 0, wordCount = 0
+        var example = ""
+        for h in heardBySong {
+            guard let ls = Lyrics.heardLines(h.words) else { continue }
+            made += 1; lineCount += ls.count
+            for l in ls { let n = l.text.split(separator: " ").count; wordCount += n; if n <= 2 { scraps += 1 } }
+            if example.isEmpty { example = "\(h.title): " + ls.prefix(4).map(\.text).joined(separator: " / ") }
+        }
+        print(String(format: "Heard lyrics: made for %d/%d recordings, %d lines averaging %.1f words, %d lines of one or two words", made, heardBySong.count, lineCount, Double(wordCount) / Double(max(1, lineCount)), scraps))
+        if !example.isEmpty { print("   " + example) }
     }
 }
 #endif

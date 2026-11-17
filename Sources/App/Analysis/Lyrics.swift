@@ -47,6 +47,8 @@ enum Lyrics {
     // MARK: fetching
 
     static func fetch(title: String, artist: String, duration: Double?) async -> Lookup {
+        // for testing what a song without lyrics looks like (heard lyrics): DONTFRET_NO_LYRICS_DB=1
+        if ProcessInfo.processInfo.environment["DONTFRET_NO_LYRICS_DB"] != nil { return .notFound }
         // 1. the exact signature (title, artist and length within a couple of seconds)
         var c = URLComponents(string: "https://lrclib.net/api/get")!
         c.queryItems = [.init(name: "track_name", value: title), .init(name: "artist_name", value: artist)]
@@ -359,6 +361,57 @@ enum Lyrics {
         }.map { lo + Double($0) * dt }
         let agree = !rivals.isEmpty && rivals.allSatisfy { sameWords(lines, offset, $0, seconds: recordingSeconds) }
         return WordAlignment(offset: offset, matched: matched, heard: hw.count, score: bestScore, runnerUp: runnerUp, rivalsAgree: agree)
+    }
+
+    // MARK: lyrics heard in the recording
+
+    /// The least confidence a heard word needs to be written into heard lyrics.
+    static let heardConfidence = 0.35
+
+    /// Lyrics written down from what the speech recogniser heard, for songs with no time-synced
+    /// lyrics to line up. Times are seconds of the recording (use offset 0 with `place`). A new line
+    /// starts after a pause, after a sentence ends, or once a line gets long. They're a transcription,
+    /// so they can contain misheard words: the app says so and lets people correct them.
+    /// nil when too little was heard clearly enough to be worth showing.
+    static func heardLines(_ words: [HeardWord]) -> [TimedLyric]? {
+        let sure = words.filter { ($0.confidence ?? 1) >= heardConfidence && !wordKey($0.text).isEmpty }
+        guard sure.filter({ !fillers.contains(wordKey($0.text)) }).count >= 12 else { return nil }
+        // Split into phrases on pauses, sentence ends, or long runs.
+        var groups: [[HeardWord]] = []
+        var cur: [HeardWord] = []
+        for w in sure {
+            if let last = cur.last {
+                let pause = w.time - last.time > 1.1
+                let sentence = cur.count >= 3 && (last.text.last.map { ".?!".contains($0) } ?? false)
+                if pause || sentence || cur.count >= 9 { groups.append(cur); cur = [] }
+            }
+            cur.append(w)
+        }
+        if !cur.isEmpty { groups.append(cur) }
+        // A one- or two-word scrap ("Oh", "Come") joins the phrase it leads into, or else the one
+        // before it, when the gap is short — so lines read as lines rather than single words.
+        var merged: [[HeardWord]] = []
+        var i = 0
+        while i < groups.count {
+            var g = groups[i]
+            while g.count <= 2, i + 1 < groups.count, groups[i + 1][0].time - g.last!.time < 2.5,
+                  g.count + groups[i + 1].count <= 11 {
+                i += 1; g += groups[i]
+            }
+            if g.count <= 2, let prev = merged.last, g[0].time - prev.last!.time < 2.5, prev.count + g.count <= 11 {
+                merged[merged.count - 1] += g
+            } else {
+                merged.append(g)
+            }
+            i += 1
+        }
+        let lines = merged.map { g -> TimedLyric in
+            var text = g.map(\.text).joined(separator: " ")
+            while let last = text.last, ".,;:".contains(last) { text.removeLast() }
+            text = text.prefix(1).uppercased() + text.dropFirst()
+            return TimedLyric(time: max(0, g[0].time - 0.1), text: text)
+        }
+        return lines.count >= 2 ? lines : nil
     }
 
     /// Whether the recording starting at `a` or at `b` in the track would show the same words at

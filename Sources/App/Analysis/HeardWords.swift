@@ -7,6 +7,8 @@ import Speech
 struct HeardWord: Hashable {
     var time: Double
     var text: String
+    /// How sure the recogniser was of the word (0–1), when it says.
+    var confidence: Double? = nil
 }
 
 /// Picks the sung words out of a recording with Apple's on-device speech recogniser (macOS 26+),
@@ -27,13 +29,14 @@ enum WordListener {
     }
 
     /// Words heard in an audio file.
-    static func words(url: URL, language: String?) async -> [HeardWord] {
+    /// `hints` are words likely to be sung (the song's title and artist), so the recogniser spells them right.
+    static func words(url: URL, language: String?, hints: [String] = []) async -> [HeardWord] {
         guard #available(macOS 26, *) else { return [] }
-        return (try? await transcribe(url: url, language: language)) ?? []
+        return (try? await transcribe(url: url, language: language, hints: hints)) ?? []
     }
 
     /// Words heard in raw samples (mono, any sample rate).
-    static func words(samples: [Float], sampleRate: Double, language: String?) async -> [HeardWord] {
+    static func words(samples: [Float], sampleRate: Double, language: String?, hints: [String] = []) async -> [HeardWord] {
         guard #available(macOS 26, *), samples.count > Int(sampleRate * 4) else { return [] }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("dontfret-words-\(UUID().uuidString).caf")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -47,23 +50,29 @@ enum WordListener {
                 let file = try AVAudioFile(forWriting: url, settings: fmt.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
                 try file.write(from: buf)
             }
-            return try await transcribe(url: url, language: language)
+            return try await transcribe(url: url, language: language, hints: hints)
         } catch {
             return []
         }
     }
 
     @available(macOS 26, *)
-    private static func transcribe(url: URL, language: String?) async throws -> [HeardWord] {
+    private static func transcribe(url: URL, language: String?, hints: [String]) async throws -> [HeardWord] {
         let wanted = Locale(identifier: language.map { $0 == "en" ? "en-US" : $0 } ?? "en-US")
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else { return [] }
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
-                                            attributeOptions: [.audioTimeRange])
+                                            attributeOptions: [.audioTimeRange, .transcriptionConfidence])
         // the language model is a one-time system download (shared with dictation)
         if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             try await install.downloadAndInstall()
         }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let hintWords = hints.filter { !$0.isEmpty }
+        if !hintWords.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = hintWords
+            try? await analyzer.setContext(context)
+        }
         let file = try AVAudioFile(forReading: url)
         let collect = Task { () -> [HeardWord] in
             var out: [HeardWord] = []
@@ -71,8 +80,9 @@ enum WordListener {
                 for run in result.text.runs {
                     guard let range = run.audioTimeRange else { continue }
                     let text = String(result.text[run.range].characters)
+                    let confidence = run.transcriptionConfidence
                     for w in text.split(whereSeparator: { $0.isWhitespace }) where !w.isEmpty {
-                        out.append(HeardWord(time: range.start.seconds, text: String(w)))
+                        out.append(HeardWord(time: range.start.seconds, text: String(w), confidence: confidence))
                     }
                 }
             }

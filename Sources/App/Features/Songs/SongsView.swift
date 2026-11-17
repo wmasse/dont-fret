@@ -789,7 +789,7 @@ struct SongEditorView: View {
     private var canSave: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty && !sections.isEmpty && unknown.isEmpty }
     private var preview: Song {
         Song(id: existing?.id ?? "preview", title: title, artist: artist, genre: genre, bpm: bpm, beatsPerBar: beats, capo: capo, strum: pattern, sections: sections,
-             feel: feel.isEmpty ? nil : feel, melody: existing?.melody, lyrics: existing?.lyrics)
+             feel: feel.isEmpty ? nil : feel, melody: existing?.melody, lyrics: existing?.lyrics, lyricsSource: existing?.lyricsSource)
     }
 
     var body: some View {
@@ -1011,7 +1011,7 @@ struct SongEditorView: View {
                         artist: artist.trimmingCharacters(in: .whitespaces).isEmpty ? "Me" : artist.trimmingCharacters(in: .whitespaces),
                         genre: genre, bpm: bpm, beatsPerBar: beats, capo: capo, strum: pattern,
                         sections: sections, isCustom: true, note: existing?.note, feel: feel.isEmpty ? nil : feel,
-                        melody: existing?.melody, lyrics: existing?.lyrics)
+                        melody: existing?.melody, lyrics: existing?.lyrics, lyricsSource: existing?.lyricsSource)
         if let onDone { onDone(song) } else { progress.addCustomSong(song); dismiss() }
     }
 }

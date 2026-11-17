@@ -168,6 +168,11 @@ struct Song: Identifiable, Codable, Hashable {
     var melody: [MelodyNote]? = nil
     /// Time-synced lyrics on the song's beats (searched songs, from LRCLIB). Shown karaoke-style.
     var lyrics: [LyricLine]? = nil
+    /// Where the lyrics came from: nil for a lyrics database, "heard" when they were written down
+    /// from the recording by the speech recogniser (may contain misheard words), "edited" once
+    /// someone has corrected heard lyrics.
+    var lyricsSource: String? = nil
+    var lyricsHeard: Bool { lyricsSource == "heard" }
 
     static let feelNames: [(String, String)] = [("strum", "Strummed"), ("boomchick", "Bass note + strum"), ("picked", "Fingerpicked"),
                                                 ("power", "Power chords"), ("reggae", "Reggae chops")]
@@ -325,6 +330,7 @@ extension Song {
         feel = c.v(.feel, nil)
         melody = c.v(.melody, nil)
         lyrics = c.v(.lyrics, nil)
+        lyricsSource = c.v(.lyricsSource, nil)
     }
 }
 
