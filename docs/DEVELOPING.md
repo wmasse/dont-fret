@@ -32,6 +32,7 @@ scripts/release.sh 1.1
 | Chord Trainer (spaced review), 1-Minute Changes, Strum Trainer | `Sources/App/Practice.swift` |
 | Song library, song page (key & capo, tricky changes, history), song editor | `Sources/App/SongsView.swift` |
 | Melody from a recording: pitch tracking, notes on the song's beats, fret positions, the melody strip | `Sources/App/Melody.swift`, `MelodyView.swift` |
+| Time-synced lyrics: LRCLIB lookup, lining up with the recording, karaoke display | `Sources/App/Lyrics.swift`, `LyricsView.swift` |
 | Mic calibration, timing calibration, backup & restore | `Sources/App/Calibration.swift` |
 | Tuner, progress, achievements | `Sources/App/TunerView.swift` |
 | Progress, XP, skill levels, learning paths, achievements, daily challenge | `Sources/App/Store.swift` |
@@ -63,6 +64,18 @@ Every analysis also picks out the song's tune, usually the lead vocal (`MelodyEx
 5. `Transcription.songZeroBeat` says which beat of the recording is song beat 0 (the first bar, the bar a repeating loop was rotated to, or minus the chart offset for a matched chord chart), so `MelodyExtractor.place` can snap notes onto the song's own beat grid (16ths). A short preview's melody repeats with its chords.
 
 The melody is stored on the song (`Song.melody`, relative to the capo like single-note tokens) and follows transposing and capo changes. `ProgressionPlayer` plays it on a second instance of the guitar (`GuitarSynth.melody`) so the tune doesn't cut off the chord's strings; `MelodyExtractor.picks` chooses where to fret each note (a small Viterbi over string/fret choices), hammer-ons and pull-offs for notes that carry straight on along a string, and vibrato on long notes. The song page shows it as a scrolling strip with string and fret labels that follows playback.
+
+### Lyrics
+
+Searched songs get time-synced lyrics from [LRCLIB](https://lrclib.net) (`Sources/App/Lyrics.swift`): a free, open lyrics database whose public API needs no account or key. Only the title, artist and track length are sent, with a `User-Agent` naming the app as LRCLIB asks, and a `Retry-After` is honoured. The exact `/api/get` lookup is tried first, then `/api/search` on title and artist for a release whose length is within 5 s.
+
+LRC times are seconds into the full track, so the app has to work out where its recording starts in the track before it can use them:
+
+1. `Lyrics.align` correlates when the melody finder heard a voice with when the lyrics say someone is singing, at every possible start (0.1 s steps). The melody finder also picks up guitar lines, so the voice is read two ways (any note with breaths filled in, and notes weighted by strength) and the start is only trusted when both agree and the best start stands out, or when every near-equal start would show the same words (a repeated chorus).
+2. A whole-song recording (listened to or from a file) is taken to start with the song if the match isn't clear. A 30-second preview that can't be placed gets no lyrics, so it never shows the wrong ones. On the bench songs (`build/selftest --lyrics-bench`) LRCLIB has synced lyrics for 17 of 17, and about 5 of 17 previews can be placed confidently.
+3. `Lyrics.place` puts each line on the song's beat timeline the same way the melody is placed: `MelodyExtractor.beatPosition` of the line's time in the recording, minus `Transcription.songZeroBeat`. A preview's lines repeat with its chords, like the melody.
+
+The lines are stored on the song (`Song.lyrics`, beats, so they follow tempo changes) and shown karaoke-style: the words fill in as the line goes by (`KaraokeLines` in `LyricsView.swift`). On the song page a bar appears at the bottom while any Hear button plays, and a Lyrics card lists every line. Play Along shows the current line above the strum, and Auto-Scroll writes each line under the chord it starts on.
 
 You can also build a song chord by chord, import ChordPro `.cho` / plain-text charts, or add a line to `SongCatalog.songs` in `Songs.swift`:
 

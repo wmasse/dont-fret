@@ -166,6 +166,8 @@ struct Song: Identifiable, Codable, Hashable {
     var feel: String? = nil
     /// The tune, worked out from the recording (searched songs). Plays along with the chords.
     var melody: [MelodyNote]? = nil
+    /// Time-synced lyrics on the song's beats (searched songs, from LRCLIB). Shown karaoke-style.
+    var lyrics: [LyricLine]? = nil
 
     static let feelNames: [(String, String)] = [("strum", "Strummed"), ("boomchick", "Bass note + strum"), ("picked", "Fingerpicked"),
                                                 ("power", "Power chords"), ("reggae", "Reggae chops")]
@@ -322,6 +324,7 @@ extension Song {
         note = c.v(.note, nil)
         feel = c.v(.feel, nil)
         melody = c.v(.melody, nil)
+        lyrics = c.v(.lyrics, nil)
     }
 }
 

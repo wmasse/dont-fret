@@ -13,6 +13,11 @@ final class ProgressionPlayer: ObservableObject {
     @Published var melodyOn = true
     /// Index into `song.melody` of the melody note sounding now.
     @Published private(set) var melodyNote: Int?
+    /// Song beat playback started from, when it started, and seconds per beat — so views can work out
+    /// where the song is between chords (lyrics follow this).
+    private(set) var startBeat: Double = 0
+    private(set) var startedAt: Date?
+    private(set) var beatSeconds: Double = 0.5
     private var task: Task<Void, Never>?
     private var melodyTask: Task<Void, Never>?
     private var chordVolume: Float?
@@ -31,6 +36,9 @@ final class ProgressionPlayer: ObservableObject {
         let capo = song.capo
         let feel = song.playFeel
         let meter = song.beatsPerBar
+        startBeat = events[min(start, events.count - 1)].start
+        beatSeconds = beat
+        startedAt = Date()
         playing = true
         if melodyOn, let melody = song.melody, !melody.isEmpty {
             playMelody(melody, from: events[min(start, events.count - 1)].start, beat: beat, capo: capo)
@@ -182,9 +190,16 @@ final class ProgressionPlayer: ObservableObject {
         melodyTask = nil
         if let v = chordVolume { GuitarSynth.shared.volume = v; chordVolume = nil }
         playing = false
+        startedAt = nil
         current = nil
         position = nil
         melodyNote = nil
+    }
+
+    /// The song beat being played at `date` (nil when stopped).
+    func beat(at date: Date) -> Double? {
+        guard playing, let t0 = startedAt else { return nil }
+        return startBeat + date.timeIntervalSince(t0) / beatSeconds
     }
 
     /// The same shape played with a capo: every string sounds `capo` frets higher.

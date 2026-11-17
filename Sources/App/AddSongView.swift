@@ -43,6 +43,10 @@ struct AddSongView: View {
     @State private var wholeFile: URL?
     @State private var wholeError: String?
     @StateObject private var listener = WholeSongListener()
+    /// Time-synced lyrics from LRCLIB (nil: not looked up yet).
+    @State private var lyricsFound: Lyrics.Lookup?
+    /// Where the analysed recording starts in the full track, when the lyrics could be lined up with it.
+    @State private var lyricsOffset: Double?
 
     // paste
     @State private var pasted = ""
@@ -314,6 +318,7 @@ struct AddSongView: View {
         lastTrack = t
         transcription = nil; failure = nil; step = 0; chartMatch = nil; chartLooked = false
         wholeAudio = nil; wholeFile = nil; wholeError = nil; listener.cancel()
+        lyricsFound = nil; lyricsOffset = nil
         guard let p = t.previewUrl.flatMap(URL.init(string:)) else {
             phase = .paste(t)
             return
@@ -333,12 +338,16 @@ struct AddSongView: View {
                 await MainActor.run { step = 4 }
                 // the preview is only 30 s: look for a human-made chart of the whole song and line it up
                 let seconds = t.trackTimeMillis.map { Double($0) / 1000 }
+                async let lyrics = Lyrics.fetch(title: t.trackName, artist: t.artistName, duration: seconds)
                 let chart = await ChordCharts.find(title: t.trackName, artist: t.artistName)
                 let match = chart.flatMap { ChordCharts.match($0, to: result, trackSeconds: seconds) }
+                let found = await lyrics
                 await MainActor.run {
                     transcription = result
                     chartMatch = match
                     chartLooked = true
+                    lyricsFound = found
+                    lyricsOffset = lyricsStart(in: result, whole: false, t)
                     let used = effective(result)
                     useCapo = used.capo > 0 && progress.skill.rank <= 2
                     step = 5
@@ -373,7 +382,7 @@ struct AddSongView: View {
                     progressRow("Downloading the 30-second preview", done: step >= 1, active: step == 0)
                     progressRow("Finding the beat", done: step >= 2, active: step == 1)
                     progressRow("Listening for the chords", done: step >= 3, active: step == 2)
-                    progressRow("Looking up a chord chart for the whole song", done: step >= 5, active: step == 4)
+                    progressRow("Looking up a chord chart and the lyrics", done: step >= 5, active: step == 4)
                     progressRow("Choosing the easiest way to play it", done: step >= 5, active: false)
                 }
                 .frame(width: 330)
@@ -451,6 +460,7 @@ struct AddSongView: View {
                                     MelodyStrip(song: song, melody: m, current: chordPlayer.playing ? chordPlayer.melodyNote : nil, height: 96)
                                 }
                             }
+                            lyricsCard(song)
                             listenCard(tr, song)
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("CHORDS").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
@@ -576,6 +586,15 @@ struct AddSongView: View {
     }
 
     private func builtSong(_ t: CatalogTrack, _ raw: Transcription) -> Song {
+        var s = songWithoutLyrics(t, raw)
+        if case .synced(let lines)? = lyricsFound, let offset = lyricsOffset {
+            s.lyrics = Lyrics.place(lines, offset: offset, transcription: effective(raw), song: s,
+                                    extended: wholeAudio == nil && usableChart == nil)
+        }
+        return s
+    }
+
+    private func songWithoutLyrics(_ t: CatalogTrack, _ raw: Transcription) -> Song {
         let tr = effective(raw)
         if wholeAudio != nil {
             return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0,
@@ -589,6 +608,52 @@ struct AddSongView: View {
                                     wholeSong: true)
         }
         return Transcriber.song(from: tr, title: t.trackName, artist: t.artistName, genre: t.genre, capo: useCapo ? tr.capo : 0)
+    }
+
+    /// Where in the full track a recording starts, found by matching the heard voice against the
+    /// lyrics' timings. A whole-song recording that can't be matched is taken to start with the song;
+    /// a preview that can't be matched gets no lyrics rather than wrong ones.
+    private func lyricsStart(in tr: Transcription, whole: Bool, _ t: CatalogTrack) -> Double? {
+        guard case .synced(let lines)? = lyricsFound, let last = lines.last else { return nil }
+        let total = t.trackTimeMillis.map { Double($0) / 1000 } ?? last.time + 15
+        let range = whole ? -3.0...max(3, total - tr.duration + 3) : 0.0...max(0, total - tr.duration)
+        let a = Lyrics.align(lines, heard: tr.heardMelody, recordingSeconds: tr.duration, range: range)
+        if let a, a.trustworthy { return a.offset }
+        return whole ? 0 : nil
+    }
+
+    /// The lyrics, karaoke-style while "Hear Our Version" plays — or why there aren't any.
+    @ViewBuilder private func lyricsCard(_ song: Song) -> some View {
+        if let lines = song.lyrics, !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("LYRICS").font(Theme.font(10, .heavy)).tracking(1.2).foregroundStyle(Theme.textFaint)
+                    Text("\(lines.filter { !$0.text.isEmpty }.count) lines, lined up with the recording"
+                         + (wholeAudio == nil && usableChart == nil ? " · repeat with the preview's chords" : ""))
+                        .font(Theme.font(11)).foregroundStyle(Theme.textDim)
+                    Spacer()
+                    Text("from LRCLIB").font(Theme.font(10)).foregroundStyle(Theme.textFaint)
+                }
+                PlayerKaraoke(player: chordPlayer, lines: lines, size: 20)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Theme.surface2))
+            }
+        } else if let found = lyricsFound {
+            let note: String? = {
+                switch found {
+                case .synced: return wholeAudio == nil
+                    ? "Lyrics found, but we couldn't tell which part of the song the preview is. Get the whole song to sing along."
+                    : "Lyrics found, but they didn't line up with this recording."
+                case .instrumental: return nil
+                case .unsynced, .notFound: return "No time-synced lyrics for this song yet, so it's chords only."
+                case .failed: return "Couldn't reach the lyrics database, so it's chords only."
+                }
+            }()
+            if let note {
+                Label(note, systemImage: "text.bubble").font(Theme.font(12)).foregroundStyle(Theme.textDim)
+            }
+        }
     }
 
     /// Where the chords came from, and how much to trust them.
@@ -756,6 +821,7 @@ struct AddSongView: View {
             return
         }
         wholeAudio = result
+        lyricsOffset = lyricsStart(in: result, whole: true, t)
         wholeFromFile = fromFile
         wholeFile = file
         if transcription == nil { transcription = result }
