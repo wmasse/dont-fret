@@ -51,6 +51,7 @@ struct SelfTest {
     static func main() {
         if CommandLine.arguments.contains("--chart-bench") { chartBench(); return }
         if CommandLine.arguments.contains("--whole-bench") { wholeBench(); return }
+        if CommandLine.arguments.contains("--melody-bench") { melodyBench(); return }
         if CommandLine.arguments.contains("--melody") { melodyChecks(); return }
         var freeOK = 0, verifyOK = 0, total = 0, falseAccept = 0, falseTotal = 0
         var misses: [String] = []
