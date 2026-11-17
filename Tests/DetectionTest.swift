@@ -1,7 +1,7 @@
 // Offline check of chord recognition: synthesizes plucked-string chords from the
 // chord library, runs them through the same FFT + chroma + template matcher the app
 // uses, and reports how often the right chord wins.
-// Run: swiftc -D SELFTEST -parse-as-library -O Sources/App/*.swift Tests/DetectionTest.swift -o build/selftest && build/selftest
+// Run: ./build.sh selftest && build/selftest
 #if SELFTEST
 import Foundation
 import Accelerate

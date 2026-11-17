@@ -1,5 +1,5 @@
 // Stand-alone renderer for the sound lab: compiles with just the guitar engine, in seconds.
-//   swiftc -O -parse-as-library Sources/App/Guitar*.swift scripts/soundlab/RenderEvents.swift -o build/render-events
+//   swiftc -O -parse-as-library Sources/App/Audio/Guitar/Guitar{DSP,Body,Engine}.swift scripts/soundlab/RenderEvents.swift -o build/render-events
 //   build/render-events events.txt out.wav [--room 0…1] [--polish 0…1] [--set name=value,…]  (see GuitarTuning)
 // Event format: see scripts/soundlab/resynth.py (same as `selftest --render-events`).
 import Foundation

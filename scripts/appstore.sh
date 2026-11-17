@@ -46,7 +46,7 @@ FLAGS=(-parse-as-library -swift-version 5 -O -D APPSTORE)
 rm -rf "$OUT" && mkdir -p "$OUT" release
 # build exactly what's committed, so unfinished work in the checkout never ships
 SNAP="$(mktemp -d)"
-git archive HEAD Sources/App | tar -x -C "$SNAP" && mv "$SNAP"/Sources/App/*.swift "$SNAP/" && rm -rf "$SNAP/Sources"
+git archive HEAD Sources/App | tar -x -C "$SNAP" && find "$SNAP/Sources/App" -name '*.swift' -exec mv {} "$SNAP/" \; && rm -rf "$SNAP/Sources"
 echo "→ Building commit $(git rev-parse --short HEAD)"
 for arch in arm64 x86_64; do
   echo "→ Compiling for $arch…"

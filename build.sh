@@ -1,16 +1,28 @@
 #!/bin/bash
 # Builds "Don't Fret.app" into ./build using only the Xcode Command Line Tools.
+#   ./build.sh             the app
+#   ./build.sh selftest    build/selftest (detection, sound and analysis checks; see docs/DEVELOPING.md)
 set -euo pipefail
 cd "$(dirname "$0")"
+source scripts/swift-flags.sh
 APP="build/Don't Fret.app"
 mkdir -p build
-echo "→ Compiling…"
+
 # compile a snapshot of the sources, so edits made while building can't break it halfway
 SNAP="$(mktemp -d)"
-cp Sources/App/*.swift "$SNAP/"
-swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" -O \
-  "$SNAP"/*.swift -o build/DontFret
-rm -rf "$SNAP"
+trap 'rm -rf "$SNAP"' EXIT
+app_sources | while read -r f; do cp "$f" "$SNAP/"; done
+
+if [[ "${1:-}" == "selftest" ]]; then
+  echo "→ Compiling the self-test…"
+  mkdir "$SNAP/Tests" && cp Tests/*.swift "$SNAP/Tests/"
+  swiftc "${SWIFT_FLAGS[@]}" -D SELFTEST -target "$(uname -m)-apple-macos14.0" "$SNAP"/*.swift "$SNAP"/Tests/*.swift -o build/selftest
+  echo "✓ Built build/selftest"
+  exit 0
+fi
+
+echo "→ Compiling…"
+swiftc "${SWIFT_FLAGS[@]}" -target "$(uname -m)-apple-macos14.0" "$SNAP"/*.swift -o build/DontFret
 echo "→ Bundling…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

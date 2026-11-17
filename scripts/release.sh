@@ -7,14 +7,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${1:?usage: scripts/release.sh <version>, e.g. 1.1}"
 APP="build/Don't Fret.app"
-FLAGS=(-parse-as-library -swift-version 5 -O)
+source scripts/swift-flags.sh
+SOURCES=()
+while read -r f; do SOURCES+=("$f"); done < <(app_sources)
 
 echo "→ Building the app bundle…"
 ./build.sh
 
 for arch in arm64 x86_64; do
   echo "→ Compiling for $arch…"
-  swiftc "${FLAGS[@]}" -target "$arch-apple-macos14.0" Sources/App/*.swift -o "build/DontFret-$arch"
+  swiftc "${SWIFT_FLAGS[@]}" -target "$arch-apple-macos14.0" "${SOURCES[@]}" -o "build/DontFret-$arch"
 done
 echo "→ Making a universal binary…"
 lipo -create -output "$APP/Contents/MacOS/DontFret" build/DontFret-arm64 build/DontFret-x86_64
