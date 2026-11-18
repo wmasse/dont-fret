@@ -153,13 +153,19 @@ enum Transcriber {
         for b in beats { for i in 0..<12 { total[i] += b.treble[i] + 0.5 * b.bass[i] } }
         var (keyRoot, minorKey) = estimateKey(total)
 
+        // the neural chord recogniser, when it's on: its per-beat chord probabilities replace the templates
+        let netFrames = ChordNet.enabled ? ChordNet.frameProbabilities(samples, sampleRate: sr, tuning: Double(tuning)) : nil
+        func net() -> [[Float]]? {
+            netFrames.map { ChordNet.beatScores($0, beatTimes: Array(beatTimes.prefix(beats.count)), lastBeat: period / fps) }
+        }
+
         // 4. chords per beat, then re-check the key against the chords actually heard
         let obs = beats.map { ($0.treble, $0.bass) }
-        var (path, margin) = viterbi(obs, keyRoot: keyRoot, minorKey: minorKey)
+        var (path, margin) = viterbi(obs, keyRoot: keyRoot, minorKey: minorKey, net: net())
         let refined = refineKey(path: path, chroma: total)
         if refined.0 != keyRoot || refined.1 != minorKey {
             (keyRoot, minorKey) = refined
-            (path, margin) = viterbi(obs, keyRoot: keyRoot, minorKey: minorKey)
+            (path, margin) = viterbi(obs, keyRoot: keyRoot, minorKey: minorKey, net: net())
         }
 
         // chords that only change every 8+ beats at a fast tempo usually mean we counted double time
@@ -196,7 +202,7 @@ enum Transcriber {
 
         // second pass: chords change on the downbeat far more often than mid-bar
         let obs2 = beats.map { ($0.treble, $0.bass) }
-        (path, margin) = viterbi(obs2, keyRoot: keyRoot, minorKey: minorKey) { b in
+        (path, margin) = viterbi(obs2, keyRoot: keyRoot, minorKey: minorKey, net: net()) { b in
             let pos = ((b - phase) % meter + meter) % meter
             return pos == 0 ? 2.0 : (meter == 4 && pos == 2 ? 4.2 : 6.5)
         }
@@ -565,7 +571,9 @@ enum Transcriber {
         return best
     }
 
-    static func viterbi(_ obs: [([Float], [Float])], keyRoot: Int, minorKey: Bool,
+    /// `net`: per-beat log-probabilities of the 24 chords from `ChordNet`; when given they replace the
+    /// template scores (the confidence margin still comes from the templates).
+    static func viterbi(_ obs: [([Float], [Float])], keyRoot: Int, minorKey: Bool, net: [[Float]]? = nil,
                         changeCost: (Int) -> Float = { _ in 2.6 }) -> ([Int], Float) {
         let templates: [[Float]] = (0..<24).map { c in
             let r = c % 12
@@ -593,6 +601,12 @@ enum Transcriber {
             emis.append(s)
         }
         let k: Float = 14
+        if let net, net.count == emis.count {
+            // in template-score units, so k × emission = scale × log p + the (lighter) key prior
+            for t in emis.indices { for c in 0..<24 {
+                emis[t][c] = ChordNet.emissionScale * net[t][c] / k + ChordNet.keyWeight * bonus[c]
+            } }
+        }
         var delta = emis[0].map { $0 * k }
         var back: [[Int]] = []
         for t in 1..<emis.count {

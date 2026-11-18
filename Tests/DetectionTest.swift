@@ -60,6 +60,8 @@ struct SelfTest {
         if CommandLine.arguments.contains("--lyrics") { lyricsChecks(); return }
         if CommandLine.arguments.contains("--lyrics-bench") { lyricsBench(); return }
         if soundLab(CommandLine.arguments) { return }
+        if chordNetSynth(CommandLine.arguments) { return }
+        if chordNetTools(CommandLine.arguments) { return }
         if CommandLine.arguments.contains("--wrong-strings") { wrongStringChecks(); return }
         if CommandLine.arguments.contains("--part-strums") { partStrumChecks(); return }
         if CommandLine.arguments.contains("--versions") { versionsBench(); return }

@@ -13,6 +13,11 @@ SNAP="$(mktemp -d)"
 trap 'rm -rf "$SNAP"' EXIT
 app_sources | while read -r f; do cp "$f" "$SNAP/"; done
 
+# the neural chord recogniser's model (optional: without it the app uses chord templates)
+if [[ -d Resources/ChordNet.mlpackage && ( ! -d build/ChordNet.mlmodelc || Resources/ChordNet.mlpackage -nt build/ChordNet.mlmodelc ) ]]; then
+  swift scripts/chordnet/compile_model.swift Resources/ChordNet.mlpackage build/ChordNet.mlmodelc
+fi
+
 if [[ "${1:-}" == "selftest" ]]; then
   echo "→ Compiling the self-test…"
   mkdir "$SNAP/Tests" && cp Tests/*.swift "$SNAP/Tests/"
@@ -28,6 +33,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp build/DontFret "$APP/Contents/MacOS/DontFret"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+[[ -d build/ChordNet.mlmodelc ]] && cp -R build/ChordNet.mlmodelc "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -53,6 +53,7 @@ extension SelfTest {
         var usedChart = 0, chartWrongKeyUsed = 0
         var finalKey = 0, finalRecall = 0.0, finalPrec = 0.0
         var beatSongs = 0, beatRight = 0, beatRoot = 0, beatNear = 0, beatTotal = 0
+        var sameSongs = 0, sameRight = 0, sameNear = 0, sameTotal = 0, sameTemplateRight = 0, sameSkipped = 0
         for b in benchSongs {
             let slug = ChordCharts.normTitle(b.title).replacingOccurrences(of: " ", with: "-").replacingOccurrences(of: "'", with: "")
             let trackFile = dir.appendingPathComponent(slug + ".track.json")
@@ -99,6 +100,34 @@ extension SelfTest {
                     beatSongs += 1; beatRight += right; beatRoot += root; beatNear += near; beatTotal += total
                     let top = confusions.sorted { $0.value > $1.value }.prefix(3).map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")
                     beatLine = String(format: "\n      beat by beat vs the chart: %.0f%% right chord, %.0f%% right root, %.0f%% within a beat (%d beats); wrong: %@", 100 * Double(right) / Double(total), 100 * Double(root) / Double(total), 100 * Double(near) / Double(total), total, top)
+                }
+            }
+            // with ChordNet on, the chart lines up against this run's own chords (meter and the quality check
+            // use them); also score it against the chart as the template run lines it up, so the reference is the same
+            if ChordNet.enabled, let chart {
+                ChordNet.forceEnabled = false
+                let ref = try? Transcriber.analyze(url: audio)
+                ChordNet.forceEnabled = nil
+                if let ref, let mr = ChordCharts.match(chart, to: ref, trackSeconds: trackSeconds), mr.quality == .high,
+                   mr.beatChords.count == ref.beatPath.count {
+                    if ref.beatTimes == tr.beatTimes {
+                        let med = ref.beatRMS.sorted()[ref.beatRMS.count / 2]
+                        var right = 0, near = 0, total = 0, tRight = 0
+                        for i in ref.beatPath.indices where ref.beatRMS[i] >= med * 0.35 {
+                            guard let want = mr.beatChords[i] else { continue }
+                            total += 1
+                            let got = tr.beatPath[i]
+                            if got == want { right += 1 }
+                            if ref.beatPath[i] == want { tRight += 1 }
+                            if got == want || (i > 0 && mr.beatChords[i - 1] == got) || (i + 1 < mr.beatChords.count && mr.beatChords[i + 1] == got) { near += 1 }
+                        }
+                        sameSongs += 1; sameRight += right; sameNear += near; sameTotal += total; sameTemplateRight += tRight
+                        beatLine += String(format: "\n      same reference (chart lined up by the template run): ChordNet %.0f%% right, %.0f%% within a beat; templates %.0f%% right (%d beats)",
+                                           100 * Double(right) / Double(max(1, total)), 100 * Double(near) / Double(max(1, total)), 100 * Double(tRight) / Double(max(1, total)), total)
+                    } else {
+                        beatLine += "\n      same reference: beats differ from the template run (tempo folded differently)"
+                        sameSkipped += 1
+                    }
                 }
             }
 
@@ -175,6 +204,9 @@ extension SelfTest {
         print("\nReal-song benchmark (\(n) songs with known chords)")
         print("   preview only : key right \(audioKey)/\(n), real chords found \(pct(audioRecall / Double(max(1, n)))), time on a right chord \(pct(audioPrec / Double(max(1, n))))")
         print("   beat by beat : right chord on \(pct(Double(beatRight) / Double(max(1, beatTotal)))) of beats, right root on \(pct(Double(beatRoot) / Double(max(1, beatTotal)))), right chord within a beat \(pct(Double(beatNear) / Double(max(1, beatTotal)))) (\(beatTotal) beats in \(beatSongs) songs with a well-matched chart)")
+        if ChordNet.enabled {
+            print("   same chart   : ChordNet right chord on \(pct(Double(sameRight) / Double(max(1, sameTotal)))) of beats, within a beat \(pct(Double(sameNear) / Double(max(1, sameTotal)))); templates \(pct(Double(sameTemplateRight) / Double(max(1, sameTotal)))) (\(sameTotal) beats in \(sameSongs) songs, charts lined up by the template run; \(sameSkipped) skipped)")
+        }
         print("   chart found  : \(chartFound)/\(n); used (fit not poor) \(usedChart), of which wrong \(chartWrongKeyUsed)")
         print("   chart+audio  : key right \(chartKey)/\(chartFound), real chords found \(pct(chartRecall / Double(max(1, chartFound)))), time on a right chord \(pct(chartPrec / Double(max(1, chartFound))))")
         print("   what you get : key right \(finalKey)/\(n), real chords found \(pct(finalRecall / Double(max(1, n)))), time on a right chord \(pct(finalPrec / Double(max(1, n)))), whole song for \(usedChart)/\(n)")
